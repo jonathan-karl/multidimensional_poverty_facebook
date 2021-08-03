@@ -1,0 +1,59 @@
+---
+title: "Data Cleaning"
+author: '21855'
+date: "03/08/2021"
+output: html_document
+---
+
+```{r}
+
+# Disable scientific notation
+options(scipen = 999)
+
+# Read in raw data
+India_Data_Collection <- read.csv("../Data Exports/Facebook/India_Data_Collection.csv")
+
+column_name <- NULL
+
+age_groups <- ifelse(India_Data_Collection$ages_ranges == "{'min': 18}", "18p", 
+                     ifelse(India_Data_Collection$ages_ranges == "{'min': 13, 'max': 34}", "13-34", 
+                            ifelse(India_Data_Collection$ages_ranges == "{'min': 35, 'max': 54}", "35-54",
+                                   ifelse(India_Data_Collection$ages_ranges == "{'min': 55}", "55p", ""))))
+
+genders <- ifelse(India_Data_Collection$genders == 0, "All", 
+                  ifelse(India_Data_Collection$genders == 1, "Male", "Female"))
+
+connection <- ifelse(India_Data_Collection$connection == "{'name': 'Wifi', 'or': [6015235495383]}", "Wifi",
+                     ifelse(India_Data_Collection$connection == "{'name': '2G', 'or': [6017253486583]}", "2G",
+                            ifelse(India_Data_Collection$connection ==  "{'name': '3G', 'or': [6017253511583]}", "3G", 
+                                   ifelse(India_Data_Collection$connection == "{'name': '4G', 'or': [6017253531383]}", "4G", ""))))
+
+# Whichever devices you choose, I recommend feeding them into the lines of code similarly as has been done above. Don't forget to include the "".
+# I recommend calling unique(India_Data_Collection$devices) or whatever your variable is called to not miss anything
+devices <- ifelse(India_Data_Collection$devices == "X", "X", "E")
+highenddevices <- ifelse(India_Data_Collection$highenddevices == "X", "X", "E")
+
+
+# Put all of the above together to name variables
+var_names <- paste0(connection, "_", genders, "_", age_groups) # Adjust accordingly
+India_Data_Collection$var_names <- var_names
+
+# Read in DHS geolocations and match them
+dhs_geo <- readOGR("../Raw Data/DHS/Geographic_Data_IND_2015_16/IAGE71FL.shp")
+temp_dhs_geo_df <- dhs_geo@data %>%
+  dplyr::select(DHSID, LATNUM, LONGNUM)
+
+India_Data_Collection$LONGNUM <- as.numeric(str_extract_all(India_Data_Collection$geo_locations, "(?<='longitude': )[\\d]+.[\\d]+"))
+India_Data_Collection$LATNUM <- as.numeric(str_extract_all(India_Data_Collection$geo_locations, "(?<='latitude': )[\\d]+.[\\d]+"))
+
+idx_id <- match(India_Data_Collection$LONGNUM,temp_dhs_geo_df$LONGNUM)
+India_Data_Collection$DHSID <- temp_dhs_geo_df$DHSID[idx_id]
+
+# Reshape Data
+India_Data_Collection <- India_Data_Collection %>% dplyr::select(DHSID, var_names, mau_audience)
+#India_Data_Collection %>% pivot_wider(names_from = var_names, values_from = mau_audience)
+# write.csv("Raw Data/Facebook/Raw/India_fb_mau.csv)
+
+
+```
+

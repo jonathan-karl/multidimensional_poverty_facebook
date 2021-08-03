@@ -1,0 +1,233 @@
+---
+title: "Data Scarcity"
+author: "Jonathan Karl"
+date: "28/04/2021"
+output: html_document
+---
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+
+# Read in and clean the national poverty line data
+national_poverty <- read.csv("../Raw Data/Serajuddin_2015_Remake/National_Poverty_Line_Data.csv")
+national_poverty_tidy <- pivot_longer(national_poverty, col = colnames(national_poverty)[5:length(colnames(national_poverty))],
+                       names_to = "Year", values_to = "Poverty_Data")
+
+# Read in and clean the international poverty line data
+international_poverty <- read.csv("../Raw Data/Serajuddin_2015_Remake/International_Poverty_Line_Data.csv")
+international_poverty_tidy <- pivot_longer(international_poverty, col = colnames(international_poverty)[5:length(colnames(international_poverty))],
+                       names_to = "Year", values_to = "Poverty_Data")
+
+
+
+```
+
+EXCLUDE 2020
+# 2000 - 2020
+```{r}
+
+# Filter by date
+national_poverty_tidy_limited_2000s <- national_poverty_tidy[national_poverty_tidy$Year != str_extract_all(national_poverty_tidy$Year, "X19\\d{2}"),]
+
+# Read in and clean the international poverty line data
+international_poverty <- read.csv("../Raw Data/Serajuddin_2015_Remake/International_Poverty_Line_Data.csv")
+international_poverty_tidy <- pivot_longer(international_poverty, col = colnames(international_poverty)[5:length(colnames(international_poverty))],
+                       names_to = "Year", values_to = "Poverty_Data")
+international_poverty_tidy_limited_2000s <- international_poverty_tidy[international_poverty_tidy$Year != str_extract_all(international_poverty_tidy$Year, "X19\\d{2}"),]
+
+number_years <- length(unique(international_poverty_tidy_limited_2000s$Year))
+
+# Compute poverty data points per country between 2000-2020
+serajuddin_national <- national_poverty_tidy_limited_2000s %>%
+  group_by(Country.Name, Country.Code) %>%
+  summarise(poverty_data_points = sum(!is.na(Poverty_Data)))
+
+serajuddin_international <- international_poverty_tidy_limited_2000s %>%
+  group_by(Country.Name) %>%
+  summarise(poverty_data_points = sum(!is.na(Poverty_Data)))
+
+# Combine both datasets
+serajuddin_national$poverty_data_points <- serajuddin_national$poverty_data_points + serajuddin_international$poverty_data_points 
+serajuddin_all <- serajuddin_national 
+
+# Compute indicators of interest
+serajuddin_all <- serajuddin_all %>%
+  group_by(Country.Name, Country.Code) %>%
+  summarise(poverty_data_points, mean_per_year = poverty_data_points/number_years, every_x_year = number_years/poverty_data_points) %>%
+  arrange(Country.Code)
+           
+# Display output
+serajuddin_all
+
+# Cluster by region
+metadata <- read.csv("../Raw Data/Serajuddin_2015_Remake/Metadata_Country.csv")
+match_idx <- match(metadata$Country.Code, serajuddin_all$Country.Code)
+serajuddin_all$Region <- 0
+serajuddin_all$Region[match_idx] <- metadata$Region
+
+# Compute indicators of interest at region level
+region_2000_2020 <- serajuddin_all %>%
+  group_by(Region) %>%
+  summarise(data_points = sum(poverty_data_points), n = n(), mean_per_year_per_country = data_points/(number_years*n), every_x_year = (number_years*n)/data_points)
+
+```
+
+# 2000 - 2009
+```{r}
+# Read in and clean the national poverty line data
+national_poverty <- read.csv("../Raw Data/Serajuddin_2015_Remake/National_Poverty_Line_Data.csv")
+national_poverty_tidy <- pivot_longer(national_poverty, col = colnames(national_poverty)[5:length(colnames(national_poverty))],
+                       names_to = "Year", values_to = "Poverty_Data")
+national_poverty_tidy_limited_2000s <- national_poverty_tidy[national_poverty_tidy$Year != str_extract_all(national_poverty_tidy$Year, "X19\\d{2}") & national_poverty_tidy$Year != str_extract_all(national_poverty_tidy$Year, "X201\\d{1}") & national_poverty_tidy$Year != str_extract_all(national_poverty_tidy$Year, "X202\\d{1}"),]
+
+# Read in and clean the international poverty line data
+international_poverty <- read.csv("../Raw Data/Serajuddin_2015_Remake/International_Poverty_Line_Data.csv")
+international_poverty_tidy <- pivot_longer(international_poverty, col = colnames(international_poverty)[5:length(colnames(international_poverty))],
+                       names_to = "Year", values_to = "Poverty_Data")
+international_poverty_tidy_limited_2000s <- international_poverty_tidy[international_poverty_tidy$Year != str_extract_all(international_poverty_tidy$Year, "X19\\d{2}") & international_poverty_tidy$Year != str_extract_all(international_poverty_tidy$Year, "X201\\d{1}") & international_poverty_tidy$Year != str_extract_all(international_poverty_tidy$Year, "X202\\d{1}"),]
+
+number_years <- length(unique(international_poverty_tidy_limited_2000s$Year))
+
+
+# Compute poverty data points per country between 2000-2009
+serajuddin_national <- national_poverty_tidy_limited_2000s %>%
+  group_by(Country.Name, Country.Code) %>%
+  summarise(poverty_data_points = sum(!is.na(Poverty_Data)))
+
+serajuddin_international <- international_poverty_tidy_limited_2000s %>%
+  group_by(Country.Name) %>%
+  summarise(poverty_data_points = sum(!is.na(Poverty_Data)))
+
+# Combine both datasets
+serajuddin_national$poverty_data_points <- serajuddin_national$poverty_data_points + serajuddin_international$poverty_data_points 
+serajuddin_all <- serajuddin_national 
+
+# Compute indicators of interest
+serajuddin_all <- serajuddin_all %>%
+  group_by(Country.Name, Country.Code) %>%
+  summarise(poverty_data_points, 
+            mean_per_year = poverty_data_points/number_years, 
+            every_x_year = number_years/poverty_data_points) %>%
+  arrange(Country.Code)
+           
+# Display output
+serajuddin_all
+
+# Cluster by region
+metadata <- read.csv("../Raw Data/Serajuddin_2015_Remake/Metadata_Country.csv")
+match_idx <- match(metadata$Country.Code, serajuddin_all$Country.Code)
+serajuddin_all$Region <- 0
+serajuddin_all$Region[match_idx] <- metadata$Region
+serajuddin_all$Income_Group <- 0
+serajuddin_all$Income_Group[match_idx] <- metadata$IncomeGroup
+
+# Compute indicators of interest at region level
+region_2000_2009 <- serajuddin_all %>%
+  group_by(Region) %>%
+  summarise(data_points = sum(poverty_data_points), n = n(), mean_per_year_per_country = data_points/(number_years*n), every_x_year = (number_years*n)/data_points)
+
+income_2000_2009 <- serajuddin_all %>%
+  group_by(Income_Group) %>%
+  summarise(data_points = sum(poverty_data_points), n = n(), mean_per_year_per_country = data_points/(number_years*n), every_x_year = (number_years*n)/data_points)
+
+
+```
+
+# 2011 - 2020
+```{r}
+# Read in and clean the national poverty line data
+national_poverty <- read.csv("../Raw Data/Serajuddin_2015_Remake/National_Poverty_Line_Data.csv")
+national_poverty_tidy <- pivot_longer(national_poverty, col = colnames(national_poverty)[5:length(colnames(national_poverty))],
+                       names_to = "Year", values_to = "Poverty_Data")
+national_poverty_tidy_limited_2000s <- national_poverty_tidy[national_poverty_tidy$Year != str_extract_all(national_poverty_tidy$Year, "X19\\d{2}") & national_poverty_tidy$Year != str_extract_all(national_poverty_tidy$Year, "X200\\d{1}") & national_poverty_tidy$Year != str_extract_all(national_poverty_tidy$Year, "X202\\d{1}"),]
+national_poverty_tidy_2011_2019 <- national_poverty_tidy_limited_2000s[national_poverty_tidy_limited_2000s$Year != "X2010",]
+
+# Read in and clean the international poverty line data
+international_poverty <- read.csv("../Raw Data/Serajuddin_2015_Remake/International_Poverty_Line_Data.csv")
+international_poverty_tidy <- pivot_longer(international_poverty, col = colnames(international_poverty)[5:length(colnames(international_poverty))],
+                       names_to = "Year", values_to = "Poverty_Data")
+international_poverty_tidy_limited_2000s <- international_poverty_tidy[international_poverty_tidy$Year != str_extract_all(international_poverty_tidy$Year, "X19\\d{2}") & international_poverty_tidy$Year != str_extract_all(international_poverty_tidy$Year, "X200\\d{1}") & national_poverty_tidy$Year != str_extract_all(national_poverty_tidy$Year, "X202\\d{1}"),]
+international_poverty_tidy_2011_2019 <- international_poverty_tidy_limited_2000s[international_poverty_tidy_limited_2000s$Year != "X2010",]
+
+number_years <- length(unique(international_poverty_tidy_2011_2019$Year))
+
+
+# Compute poverty data points per country between 2000-2020
+serajuddin_national <- national_poverty_tidy_2011_2019 %>%
+  group_by(Country.Name, Country.Code) %>%
+  summarise(poverty_data_points = sum(!is.na(Poverty_Data)))
+
+serajuddin_international <- international_poverty_tidy_2011_2019 %>%
+  group_by(Country.Name) %>%
+  summarise(poverty_data_points = sum(!is.na(Poverty_Data)))
+
+# Combine both datasets
+serajuddin_national$poverty_data_points <- serajuddin_national$poverty_data_points + serajuddin_international$poverty_data_points 
+serajuddin_all <- serajuddin_national 
+
+# How many 0 or 1
+write.csv(serajuddin_all[serajuddin_all$poverty_data_points == 0 | serajuddin_all$poverty_data_points == 1,], "../Data Exports/Serajuddin_Remake.csv")
+
+
+# Compute indicators of interest
+serajuddin_all <- serajuddin_all %>%
+  group_by(Country.Name, Country.Code) %>%
+  summarise(poverty_data_points, 
+            mean_per_year = poverty_data_points/number_years, 
+            every_x_year = number_years/poverty_data_points) %>%
+  arrange(poverty_data_points)
+           
+# Display output
+serajuddin_all
+
+# Cluster by region
+metadata <- read.csv("../Raw Data/Serajuddin_2015_Remake/Metadata_Country.csv")
+match_idx <- match(metadata$Country.Code, serajuddin_all$Country.Code)
+serajuddin_all$Region <- 0
+serajuddin_all$Region[match_idx] <- metadata$Region
+serajuddin_all$Income_Group <- 0
+serajuddin_all$Income_Group[match_idx] <- metadata$IncomeGroup
+
+# Compute indicators of interest at region level
+region_2011_2019 <- serajuddin_all %>%
+  group_by(Region) %>%
+  summarise(data_points = sum(poverty_data_points), n = n(), mean_per_year_per_country = data_points/(number_years*n), every_x_year = (number_years*n)/data_points)
+
+income_2011_2019 <- serajuddin_all %>%
+  group_by(Income_Group) %>%
+  summarise(data_points = sum(poverty_data_points), n = n(), mean_per_year_per_country = data_points/(number_years*n), every_x_year = (number_years*n)/data_points)
+
+
+serajuddin_all[serajuddin_all$poverty_data_points == 0 | serajuddin_all$poverty_data_points == 1,] %>%
+  group_by(Income_Group,Region) %>%
+  summarise(data_deprived_countries = n())
+
+
+```
+
+
+```{r}
+region_2000_2020
+region_2000_2009
+region_2011_2019
+
+income_2000_2009
+income_2011_2019
+
+
+
+# Region Plot
+ggplot() +
+  geom_point(data = region_2000_2009[-c(1:2),], aes(y = Region, x = every_x_year,color = "2000-2009")) +
+  geom_point(data = region_2011_2019[-c(1:2),], aes(y = Region, x = every_x_year,color = "2011-2019")) +
+  theme_minimal()
+
+# Income Group Plot
+ggplot() +
+  geom_point(data = income_2000_2009[-c(1:2),], aes(y = Income_Group, x = every_x_year,color = "2000-2009")) +
+  geom_point(data = income_2011_2019[-c(1:2),], aes(y = Income_Group, x = every_x_year,color = "2011-2019")) +
+  theme_minimal()
+
+```
+COMPUTE NUMBER OF COUNTRIES WITH 1 or LESS IN X YEARS

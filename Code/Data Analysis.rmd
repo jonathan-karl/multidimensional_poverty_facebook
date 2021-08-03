@@ -1,0 +1,3406 @@
+---
+title: "Data Exploration and Analysis"
+author: '28155'
+date: "31/05/2021"
+output: html_document
+---
+
+# Libraries
+
+```{r}
+# Load necessary packages to include an actual map (for illustrative purposes)
+library(ggmap)
+library(ggthemes)
+library(tidyverse)
+library(foreign)
+library(ggpubr)
+library(sp)
+library(keras)
+library(tfdatasets)
+library(e1071)
+library(rsample)
+library(rgdal)
+library(maptools)
+library(raster)
+library(glmnet)
+library(readstata13)
+library(mapproj)
+library(viridis)
+library(caret)
+library(gbm)
+
+# install.packages("plyr") (do not load into library)
+```
+
+# Functions
+
+```{r}
+
+## Functions for interpreting the linear regressions
+# To display most predictive variables with cross validated lasso regression
+display_most_predictive_vars <- function(x,y){
+  fit <-cv.glmnet(x,y)
+  non_zero_coefficients <- coef(fit, s= fit$lambda.min)
+  idx <- as.numeric(non_zero_coefficients) != 0
+  most_predictive_vars_df <- data.frame(coefficient = non_zero_coefficients[idx,]) %>% arrange(coefficient)
+  return(most_predictive_vars_df)
+}
+
+# To predict and show the fit on Plot
+plot_fit <- function(pred, m, data, var_of_interest, xlim.1 = 0, xlim.2 = 1, ylim.1 = 0, ylim.2 = 1, colour = "black", size = 1){
+  plot <- ggplot(data = data, aes(x = data[,var_of_interest], y = pred)) +
+    geom_point(aes(color = colour), size = size) +
+    geom_abline(intercept = 0, slope = 1) + 
+    geom_smooth(method = "lm", se = FALSE) + 
+    xlim(xlim.1, xlim.2) + ylim(ylim.1, ylim.2) +
+    xlab("Actual") + ylab("Predicted") +
+    ggtitle(paste(var_of_interest, "Fit")) + 
+    theme_minimal()
+  plot 
+  return(plot)
+}
+
+# Compute mae for different levels of poverty
+plot_mae_for_different_levels <- function(data, pred, var_of_interest){
+  overall_mae <- mean(abs(pred - data[,var_of_interest]))
+  print(paste0("Overall MAE for ", var_of_interest, ": ", overall_mae))
+  
+  mae_all <- NULL
+  quantiles_var <- quantile(data[,var_of_interest])
+  for(i in 2:length(quantiles_var)){
+    if(i == 2){
+      mae_temp <- mean(abs(pred[data[,var_of_interest] <= quantiles_var[i] & data[,var_of_interest] >= min(data[,var_of_interest])] - data[,var_of_interest][data[,var_of_interest] <= quantiles_var[i] & data[,var_of_interest] >= min(data[,var_of_interest])]))
+      mae_all <- c(mae_all, mae_temp)
+    }
+    else{
+      mae_temp <- mean(abs(pred[data[,var_of_interest] <= quantiles_var[i] & data[,var_of_interest] > quantiles_var[i-1]] - data[,var_of_interest][data[,var_of_interest] <= quantiles_var[i] & data[,var_of_interest] > quantiles_var[i-1]]))
+      mae_all <- c(mae_all, mae_temp)
+    }
+  }
+  
+  plot <- ggplot() +
+    geom_point(aes(x = 1:4, y = mae_all)) +
+    xlab("Quantiles") + ylab("MAE") +
+    ggtitle(paste(var_of_interest, "MAE in different quantiles of deprivation")) + 
+    theme_minimal()
+  
+  print(plot)
+  
+  return(mae_all)
+}
+
+
+# Set up Neural Network
+
+train_NN <- function(data){
+  df <- data
+  colnames(df)[1] <- "y" 
+  
+  # Split data into train and test
+  split <- 0.75
+  train_idx <- sample(1:nrow(df), floor(nrow(df)*split))
+  train <- df[train_idx,]
+  test <- df[-train_idx,]
+  
+  # Set up features
+  spec <- feature_spec(train, y ~ .) %>%
+    step_numeric_column(all_numeric()) %>% 
+    fit()
+  
+  # Set up Network Structure
+  input <- layer_input_from_dataset(train %>% dplyr::select(-y))
+  output <- input %>%
+    layer_dense_features(dense_features(spec)) %>% 
+    layer_dense(units = 64, activation = "relu") %>%
+    layer_dense(units = 64, activation = "relu") %>%
+    layer_dense(units = 1) 
+  
+  # Set up model
+  model <- keras_model(input, output)
+  model %>% compile(loss = "mae", optimizer = optimizer_adam(), metrics = list("mean_absolute_error"))
+  
+  
+  # Display training progress by printing a single dot for each completed epoch.
+  print_dot_callback <- callback_lambda(
+    on_epoch_end = function(epoch, logs) {
+      if (epoch %% 80 == 0) cat("\n")
+      cat(".")
+      }
+    )
+  
+  # Train model
+  history <- model %>% 
+    fit(
+      x = train %>% dplyr::select(-y),
+      y = train$y,
+      epochs = 15, 
+      batch_size = 128,
+      validation_split = 0.2,
+      verbose = 2,
+      callbacks = list(print_dot_callback)
+    )
+  plot(history)
+  
+  # Predict
+  test_predictions <- model %>% predict(test %>% dplyr::select(-y))
+  
+  
+  m <- lm(test$y ~ test_predictions[,1])
+  r_squared <- summary(m)$r.squared
+  print(r_squared)
+  
+  return(list(test_predictions, m, test, r_squared))
+
+}
+
+
+plot_india_adm <- function(var_of_interest, title, subtitle, legend_title, lower = 0, upper, data = adm2_ind_shp_fortified){
+
+  # Plot
+  plot <- ggplot() +
+    geom_polygon(data = data, aes(fill =  unlist(data[,var_of_interest]), x = long, y = lat, group = group), size=0, alpha=0.9) +
+      scale_fill_viridis(limits = c(lower,upper), name=legend_title, guide = guide_legend(label.position = "bottom", title.position = 'top', nrow=1)) +
+    labs(title = title,
+         subtitle = subtitle) +
+    theme(text = element_text(color = "#22211d"),
+          plot.background = element_rect(fill = NA, color = NA),
+          panel.background = element_rect(fill = NA, color = NA),
+          legend.background = element_rect(fill = NA, color = NA),
+          axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank(),
+          plot.title = element_text(size= 16, hjust=0.01, color = "#4e4d47", margin = margin(b = -0.1, t = 0.4, l = 2, unit = "cm")),
+          plot.subtitle = element_text(size= 12, hjust=0.01, color = "#4e4d47", margin = margin(b = -0.1, t = 0.43, l = 2, unit = "cm")),
+          legend.position = c(0.7, 0.09)) +
+    coord_map()
+  
+  return(plot)
+}
+
+# Function to cross validate linear regression
+cross_validated_lm <- function(data = NULL, folds = 10, seed = 123, log_1_trans = T){
+  
+  set.seed(seed)
+  r_squared <- NULL
+  
+  
+  # Set up for formula
+  colnames(data)[1] <- "y"
+    
+  # Set up folds
+  separate_folds <- split.data.frame(data, sample(1:folds, nrow(data), replace=T))
+  
+  # Compute Cross validated estimates of R-squared of linear regression.
+  for(fold in 1:folds){
+      
+      # Select folds
+      fold_validate <- separate_folds[[fold]]
+      folds_train <- do.call(rbind, separate_folds[-fold])
+      
+      # Estimate model
+      if(log_1_trans){
+        model <- lm(log(y+1) ~., data = folds_train)
+      }
+      else{
+        model <- lm(y ~., data = folds_train)
+      }
+      # Compute R-squared
+      pred <- predict(model, fold_validate[,-1])
+      m_temp.1 <- lm(y ~ pred, data = fold_validate)
+      r_squared_temp <- summary(m_temp.1)$r.squared
+      r_squared <- c(r_squared, r_squared_temp)
+  }
+      return(list(r_squared, m_temp.1))
+}
+
+# Function to cross validate tree regression
+cross_validated_gbm <- function(data = NULL, folds = 10, trees = 5000, seed = 7, log_1_trans = F){
+  
+  set.seed(seed)
+  r_squared <- NULL
+  # Set up for formula
+  colnames(data)[1] <- "y"
+  
+  # Set up folds
+  separate_folds <- split.data.frame(data, sample(1:folds, nrow(data), replace=T))
+  
+  # Compute Cross validated estimates of R-squared of linear regression.
+  for(fold in 1:folds){
+      
+      # Select folds
+      fold_validate <- separate_folds[[fold]]
+      folds_train <- do.call(rbind, separate_folds[-fold])
+      
+      # Estimate model
+      if(log_1_trans){
+       model <- gbm(log(y+1) ~., data = folds_train, verbose = F, n.trees = trees) 
+      }
+      else{
+       model <- gbm(y ~., data = folds_train, verbose = F, n.trees = trees) 
+      }
+      
+      # Compute R-squared
+      pred_gbm <- predict.gbm(model, newdata = fold_validate[,-1])
+      m_temp.1 <- lm(y ~ pred_gbm, data = fold_validate)
+      r_squared_temp <- summary(m_temp.1)$r.squared
+      r_squared <- c(r_squared, r_squared_temp)
+  }
+      return(list(r_squared, model))
+}
+
+```
+
+# Geolocations Database Prep
+
+```{r}
+# Disable scientific notation
+options(scipen = 999)
+
+# Read in DHS geolocations
+dhs_geo <- readOGR("../Raw Data/DHS/Geographic_Data_IND_2015_16/IAGE71FL.shp")
+dhs_geo_df <- dhs_geo@data %>%
+  dplyr::select(DHSID, DHSCLUST, URBAN_RURA, LATNUM, LONGNUM, ADM1NAME, DHSREGNA)
+
+```
+
+# Population Statistics Prep
+
+```{r}
+# This is to compute population statistic in order to computer Facebook Penetration
+
+## Create Shapefile of Clusters with Radius
+# This is done in the geospatial software QGIS using the "Split Vector Layer"-function. This allows to retain only points that are rural/urban. Then using the "Buffer"-function, the exact polygons are created (circles with accurate radius).
+
+# The shapefile "Population_clusters.shp was created in QGIS (to compute zonal stats of the population raster file). But the code below allows a simple reproduction of what was done in QGIS.
+
+# Read in shapefile and prepare to read in raster file
+#india_dhs_cluster_polygons <- readOGR("../Data Exports/QGIS/DHS_polygons_FB_ready.shp")
+#raster <- "../Raw Data/WorldPop/ind_ppp_2020_constrained.tiff"
+#india_clusters <- readOGR("../Raw Data/DHS/Geographic_Data_IND_2015_16/IAGE71FL.shp")
+#
+##create a raster stack
+#s <- stack(raster)
+##extract raster cell count (sum) within each polygon area (poly)
+#sum_pop <- extract(s, india_dhs_cluster_polygons, fun=sum, na.rm=TRUE, df=TRUE)
+#
+## write to a data frame and csv
+#df <- data.frame(sum_pop)
+#write.csv(df, "../Data Exports/Population/Population_Clusters.csv")
+
+
+# After having computed the statistic in QGIS...
+# Compute Population Vector to be added to database
+population_clusters_india <- readOGR("../Data Exports/QGIS/Population_clusters.shp")
+temp <- population_clusters_india@data %>% arrange(DHSID)
+temp.2 <- dhs_geo_df %>% arrange(DHSID)
+sum(temp$DHSID != temp.2$DHSID) # should be 0
+population_stats <- data.frame(DHSID = temp$DHSID, SUM = as.integer(temp$X_sum))
+
+```
+
+# FB Database Prep
+
+```{r}
+
+# Read and Process FB Data
+fb_Fathekia <- read.csv("../Raw Data/Facebook/Fathekia et al/India_dataset.csv") %>%
+  arrange(DHSID)
+fb_raw <- read.csv("../Raw Data/Facebook/Raw/India_fb_mau.csv") %>%
+  arrange(DHSID)
+
+# Check which variables Fatehkia et al. 2020 dropped in their analysis
+Fathekia_vars <- colnames(fb_Fathekia) 
+Fathekia_vars <- str_replace_all(Fathekia_vars, "_frac", "")
+fb_vars <- colnames(fb_raw)
+
+idx <- fb_vars %in% Fathekia_vars
+print(paste(sum(!idx), "Variables were dropped"))
+dropped_vars <- fb_vars[!idx]
+
+# Copy df
+fb <- fb_raw
+# Compute Fractions
+for(i in colnames(fb)[3:ncol(fb)]){
+  new_columnname <- paste0(i, "_frac")
+  fb[,new_columnname] <- fb[,i]/fb[,"FB_user_18p_All"]
+  fb[,i] <- NULL
+}
+
+# Add Population Data and compute Facebook Penetration
+idx <- population_stats$DHSID %in% fb$DHSID
+population_stats <- population_stats[idx,] %>%
+  arrange(DHSID)
+fb <- add_column(fb, population_stats$SUM, .after = 1)
+colnames(fb)[2] <- "population"
+fb_penetration <- fb$FB_user_18p_All/fb$population
+fb <- add_column(fb, fb_penetration, .after = 3)
+colnames(fb)[4] <- "FB_Penetration_18p"
+
+# Adjust overestimates (if there is more Facebook Users than)
+estimate <- 0
+temp <- unlist(unname(ifelse(fb[,4] > 1,1,0)))
+table(temp)
+sum(temp, na.rm = T)
+
+for(i in 4:ncol(fb)){
+  estimate <- ifelse(fb[,i] > 1, estimate+1, estimate)
+  fb[,i] <- ifelse(fb[,i] > 1, 1, fb[,i])
+}
+
+# Exclude columns that are too sparse (essentially only 0s) or no/barely any variation
+#null_cols <- unname(sapply(fb[,-1], FUN = sum, na.rm = T, MARGIN = 2))
+#idx <- null_cols > 3
+#fb <- fb[,idx]
+#null_std <- unname(apply(fb[,-1], FUN = sd, na.rm = T, MARGIN = 2))
+#idx <- null_std > 0.001
+#fb <- fb[,idx]
+
+```
+
+# MPI Database Prep
+
+```{r}
+
+# Read and process MPI data to have one observation per household
+#mpi_ind <- rio::import("../Data Exports/DHS/ind_dhs15-16.dta")
+#mpi_ind_hh <- mpi_ind %>%
+#  group_by(hh_id) %>%
+#  summarise_all(mean)
+#write.csv(mpi_ind_hh, "../Data Exports/DHS/mpi_ind_hh.csv")
+mpi_ind_hh <- read.csv("../Data Exports/DHS/mpi_ind_hh.csv")
+
+# Split the id variable into two
+indicator_split <- nchar(mpi_ind_hh$hh_id)
+table(indicator_split)
+splitted.1 <- t(sapply(mpi_ind_hh$hh_id[indicator_split == 9], function(x) substring(x, first=c(1,6), last=c(5,9))))
+splitted.2 <- t(sapply(mpi_ind_hh$hh_id[indicator_split == 10], function(x) substring(x, first=c(1,7), last=c(6,10))))
+splitted_all <- rbind(splitted.1, splitted.2)
+mpi_ind_hh_id <- cbind(splitted_all, mpi_ind_hh)
+mpi_ind_hh_id$`2` <- str_remove(mpi_ind_hh_id$`2`, "^0+")
+mpi_ind_hh_id$`1` <- as.numeric(mpi_ind_hh_id$`1`)
+mpi_ind_hh_id$`2` <- as.numeric(mpi_ind_hh_id$`2`)
+colnames(mpi_ind_hh_id)[1:2] <- c("DHSCLUST", "Houshold_No")
+mpi_ind_hh_id$subsample <- NULL # Remove superfluous column
+# Verify
+head(mpi_ind_hh_id)
+
+# Compute deprivation score based on Alkire, S., & Foster, J. (2011). Counting and multidimensional poverty measurement. Journal of public economics, 95(7-8), 476-487.
+mpi_ind_hh_id$deprivation_score <- mpi_ind_hh_id$d_cm*1/6 +
+                                   mpi_ind_hh_id$d_nutr*1/6 +
+                                   mpi_ind_hh_id$d_satt*1/6 +
+                                   mpi_ind_hh_id$d_educ*1/6 +
+                                   mpi_ind_hh_id$d_elct*1/18 +
+                                   mpi_ind_hh_id$d_wtr*1/18 +
+                                   mpi_ind_hh_id$d_sani*1/18 +
+                                   mpi_ind_hh_id$d_hsg*1/18 +
+                                   mpi_ind_hh_id$d_ckfl*1/18 +
+                                   mpi_ind_hh_id$d_asst*1/18
+
+# Classify deprivations based on Alkire, S., Kanagaratnam, U., Suppa, N. (2020). ‘The Global Multidimensional Poverty Index (MPI) 2020’, OPHI Briefing 49, Oxford Poverty and Human Development Initiative, University of Oxford.
+mpi_ind_hh_id$deprivation_classification <- ifelse(mpi_ind_hh_id$deprivation_score >= 1/3, "Deprived",
+                                                   ifelse(mpi_ind_hh_id$deprivation_score < 1/3 & mpi_ind_hh_id$deprivation_score >= 0.2, "Vulnerable",
+                                                          ifelse(mpi_ind_hh_id$deprivation_score >= 0.5, "Severely Deprived", "Not Deprived")))
+
+mean(mpi_ind_hh_id$deprivation_score[mpi_ind_hh_id$deprivation_classification == "Deprived"], na.rm = T)
+
+# Group by cluster and aggregate the poverty prevalence per cluster (share of households deprived of X)
+mpi_ind_clust <- mpi_ind_hh_id %>%
+  drop_na() %>%
+  group_by(DHSCLUST) %>%
+  summarise(MPI = mean(deprivation_score[deprivation_classification == "Deprived"], na.rm = T) * sum(deprivation_classification == "Deprived")/n(),
+            share_deprived = sum(deprivation_classification == "Deprived")/n(),
+            avg_intensity = mean(deprivation_score[deprivation_classification == "Deprived"], na.rm = T),
+            d_cm = sum(d_cm, na.rm = T)/n(),
+            d_nutr = sum(d_nutr, na.rm = T)/n(),
+            d_satt = sum(d_satt, na.rm = T)/n(),
+            d_educ = sum(d_educ, na.rm = T)/n(),
+            d_elct = sum(d_elct, na.rm = T)/n(),
+            d_wtr = sum(d_wtr, na.rm = T)/n(),
+            d_sani = sum(d_sani, na.rm = T)/n(),
+            d_hsg = sum(d_hsg, na.rm = T)/n(),
+            d_ckfl = sum(d_ckfl, na.rm = T)/n(),
+            d_asst = sum(d_asst, na.rm = T)/n())
+
+# fix the NaN's
+mpi_ind_clust$avg_intensity <- ifelse(is.nan(mpi_ind_clust$avg_intensity), 0, mpi_ind_clust$avg_intensity)
+mpi_ind_clust$MPI <- ifelse(is.nan(mpi_ind_clust$MPI), 0, mpi_ind_clust$MPI)
+
+```
+
+# Database Combination
+
+```{r}
+
+################### GEO & MPI
+# Select all those which match
+idx <- dhs_geo_df$DHSCLUST %in% mpi_ind_clust$DHSCLUST
+dhs_geo_df <- dhs_geo_df[idx,] %>%
+  arrange(DHSCLUST)
+
+# Combine MPI and DHS GEOLOCATIONS & Population Stats
+geo_mpi <- cbind(dhs_geo_df, mpi_ind_clust[,-1])
+
+################### GEO, MPI & FB
+# Match and Merge with Facebook Data
+idx <-  geo_mpi$DHSID %in% fb$DHSID  
+geo_mpi <- geo_mpi[idx,] %>% arrange(DHSID)
+idx <-  fb$DHSID %in% geo_mpi$DHSID
+fb <- fb[idx,] %>% arrange(DHSID)
+
+# Combine MPI, Geolocations & FB data and drop NAs
+geo_mpi_fb <- cbind(geo_mpi, fb[,-1])
+geo_mpi_fb <- geo_mpi_fb %>% drop_na()
+
+
+# Clean of superfluous columns (which are used for further analysis)
+ADM1NAME <- geo_mpi_fb$ADM1NAME
+DHSREGNA <- geo_mpi_fb$DHSREGNA
+geo_mpi_fb <- dplyr::select(geo_mpi_fb, -c(ADM1NAME, DHSREGNA))
+
+# Save to save time
+save(geo_mpi_fb, fb, mpi_ind_hh_id, dhs_geo, ADM1NAME, DHSREGNA, file = "../Data Exports/Code/mpi_fb_geo.RData")
+
+```
+
+# Descriptive Stats
+
+```{r}
+load("../Data Exports/Code/mpi_fb_geo.RData")
+
+variables_full <- c("MPI", "Share Deprived", "Average Intensity", "Child Mortality", "Nutrition", "School Attendance", "Education", "Electricity", "Drinking Water", "Sanitation", "Housing", "Cooking Fuel", "Assets")
+
+# How many Households are deprived of each
+deprived_households <- NULL
+for(i in colnames(geo_mpi_fb)[9:18]){
+  temp <- sum(geo_mpi_fb[,i] * geo_mpi_fb$population)
+  deprived_households <- c(deprived_households, temp)
+}
+names(deprived_households) <- variables_full[4:13]
+sort(deprived_households)
+
+# Correlation of FB penetration with indicators
+correlation_w_fb_pen <- NULL
+for(i in colnames(geo_mpi_fb)[9:18]){
+  temp <- cor(x = geo_mpi_fb[,i], y = geo_mpi_fb$FB_Penetration_18p, method = "pearson")
+  correlation_w_fb_pen <- c(correlation_w_fb_pen, temp)
+}
+names(correlation_w_fb_pen) <- variables_full[4:13]
+sort(correlation_w_fb_pen)
+
+
+# Summary of training vars in first quantile
+for(i in colnames(geo_mpi_fb)[21:43]){
+  for(j in colnames(geo_mpi_fb)[9:18]){
+    quantile_var <- quantile(geo_mpi_fb[,j])
+    print(j)
+    print(i)
+    print(summary(geo_mpi_fb[geo_mpi_fb[,j] < quantile_var[2],i]))
+  }
+}
+
+
+# Correlation of all FB features with indicators
+correlation_all <- data.frame()
+significance_all <- data.frame()
+row <- 1
+column <- 1
+for(i in colnames(geo_mpi_fb)[9:18]){
+  for(j in colnames(geo_mpi_fb)[21:length(colnames(geo_mpi_fb))]){
+    temp <- cor(x = geo_mpi_fb[,i], y = geo_mpi_fb[,j], method = "pearson")
+    temp.1 <- cor.test(x = geo_mpi_fb[,i], y = geo_mpi_fb[,j], method = "pearson")[[1]]
+    temp.1 <- ifelse(abs(temp.1) > 1.96 & abs(temp.1) < 2.576, "*", ifelse(abs(temp.1) > 2.576 & abs(temp.1) < 3.090, "**", ifelse(abs(temp.1) > 3.090, "***", "")))
+    
+    correlation_all[row,column] <- temp
+    significance_all[row,column] <- temp.1
+    column <- column + 1
+  }
+  row <- row + 1
+  column <- 1
+}
+colnames(correlation_all) <- colnames(geo_mpi_fb)[21:length(colnames(geo_mpi_fb))]
+colnames(significance_all) <- colnames(geo_mpi_fb)[21:length(colnames(geo_mpi_fb))]
+
+correlation_all <- data.frame(t(correlation_all))
+significance_all <- data.frame(t(significance_all))
+
+colnames(correlation_all) <- variables_full[4:13]
+colnames(significance_all) <- variables_full[4:13]
+
+correlation_all<- add_column(correlation_all, FB_feature = rownames(correlation_all), .before = 0)
+significance_all<- add_column(significance_all, FB_feature = rownames(significance_all), .before = 0)
+
+correlation_all$FB_feature <- factor(correlation_all$FB_feature, levels = rev(unique(correlation_all$FB_feature)))
+significance_all$FB_feature <- factor(significance_all$FB_feature, levels = rev(unique(significance_all$FB_feature)))
+
+rownames(correlation_all) <- NULL
+rownames(significance_all) <- NULL
+
+correlation_all <- correlation_all %>% pivot_longer(cols = `Child Mortality`:Assets, names_to = "Indicator", values_to = "Correlation")
+correlation_all$Indicator <- factor(correlation_all$Indicator, levels = rev(unique(correlation_all$Indicator)))
+correlation_all$Correlation <- round(correlation_all$Correlation, 2)
+significance_all <- significance_all %>% pivot_longer(cols = `Child Mortality`:Assets, names_to = "Indicator", values_to = "Significance")
+correlation_all$Significance <- significance_all$Significance
+correlation_all$Significance <- ifelse(is.na(correlation_all$Significance), "", correlation_all$Significance)
+
+# Export to Latex
+#correlation_all.1 <- correlation_all[,c(1,2,3,4)]
+#correlation_all.2 <- correlation_all[,c(1,5,6,7)]
+#correlation_all.3 <- correlation_all[,c(1,8,9,10)]
+#correlation_all.4 <- correlation_all[,c(1,11)]
+#xtable::xtable(correlation_all.4)
+
+
+plot_cor_heatmap <- ggplot(correlation_all, aes(x = Indicator, y = FB_feature, fill= Correlation)) + 
+  geom_tile(colour = "white") +
+  geom_text(aes(label=paste(Correlation,Significance), colour = "white")) +
+  scale_fill_viridis(discrete=FALSE) + 
+  scale_x_discrete(position = "top") +
+  labs(title = "Correlation of all FB features with all Indicators") + 
+  xlab("") + ylab("") +
+  theme_minimal() + 
+  theme(
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 30),
+    panel.grid = element_blank())
+
+ggsave("../Data Exports/Figures/Correlation_All.png", plot_cor_heatmap, width = 100, height = 100, limitsize = F)
+
+
+```
+
+# Test how predictive FB data can be of MPI
+
+## Reproduce Fatehkia et al. (2020) for comparative use
+
+```{r}
+# Load and drop na's
+load("../Data Exports/Code/mpi_fb_geo.RData")
+
+# Read household recode data in
+dhs_ind_2016 <- readstata13::read.dta13("../Data Exports/DHS/Household_Recode_Subset.dta")
+
+# Compute mean wealth on cluster level
+dhs_wealth_cluster <- dhs_ind_2016 %>%
+  group_by(hv001) %>%
+  summarise(wealth_index = mean(hv271, na.rm = T))
+rm(dhs_ind_2016)
+
+
+# Combine datasets
+geo_mpi_fb_temp <- geo_mpi_fb
+# Match and Merge with Facebook Data
+idx <-  dhs_wealth_cluster$hv001  %in% geo_mpi_fb_temp$DHSCLUST
+dhs_wealth_cluster <- dhs_wealth_cluster[idx,] %>% arrange(hv001)
+geo_mpi_fb_temp <- geo_mpi_fb_temp %>% arrange(DHSCLUST)
+idx <-  geo_mpi_fb_temp$DHSCLUST %in% dhs_wealth_cluster$hv001
+geo_mpi_fb_temp <- geo_mpi_fb_temp[idx,] %>% arrange(DHSCLUST)
+
+# Combine MPI, Geolocations & FB data % Wealth Index
+temp_comb_fb_dhs <- add_column(geo_mpi_fb_temp, dhs_wealth_cluster$wealth_index, .after = 5)
+colnames(temp_comb_fb_dhs)[6] <- "Wealth_Index"
+
+# Wealth Index predicted with FB Ad Data
+wealth_data <- temp_comb_fb_dhs[,-c(1:5, 7:21, 45:251)] %>% drop_na()
+temp <- temp_comb_fb_dhs[,-c(1:2,4,5, 7:21, 45:251)] %>% drop_na
+
+# Linear Regression
+m_wealth <- lm(Wealth_Index ~., data = wealth_data)
+pred_wealth <- predict(m_wealth, wealth_data[,-1])
+summary(m_wealth)$r.squared
+plot_fit(pred_wealth, m_wealth, wealth_data, "Wealth_Index",  xlim.1 = -200000, xlim.2 = 250000, ylim.1 = -150000, ylim.2 = 200000, colour = geo_mpi_fb_temp$URBAN_RURA, size = 0.1)
+x <- model.matrix(Wealth_Index ~., data=wealth_data) 
+y <- wealth_data$Wealth_Index
+display_most_predictive_vars(x,y)
+(wealth_cv_rsquared <- cross_validated_lm(data = wealth_data, folds = 10, log_1_trans = F, seed = 7)) 
+mean(wealth_cv_rsquared[[1]]) # 0.4651935
+
+# Regression Tree
+#wealth_gbm <- cross_validated_gbm(data = wealth_data, folds = 10, trees = 5000, seed = 7)
+#wealth_gbm_r2 <- wealth_gbm[[1]]
+#mean(wealth_gbm_r2) # 0.514
+#wealth_gbm_model <- wealth_gbm[[2]]
+#
+#save(wealth_gbm_r2, wealth_gbm_model, file = "../Data Exports/Code/wealth_gbm.RData")
+load("../Data Exports/Code/wealth_gbm.RData")
+
+pred_wealth_gbm <- predict.gbm(wealth_gbm_model, newdata = wealth_data[,-1])
+m_temp <- lm(pred_wealth_gbm ~ wealth_data$Wealth_Index)
+summary(m_temp)
+plot_fit(pred_wealth_gbm, wealth_gbm_model, wealth_data, "Wealth_Index",  xlim.1 = -200000, xlim.2 = 250000, ylim.1 = -150000, ylim.2 = 200000, colour = geo_mpi_fb_temp$URBAN_RURA, size = 0.1)
+
+# Mirror style of Fatehkia et al. (2020a)
+plot.reproduction <- ggplot(data = wealth_data, aes(x = wealth_data[,"Wealth_Index"], y = pred_wealth_gbm)) +
+  geom_point(aes(color = geo_mpi_fb_temp$URBAN_RURA), size = 0.5) +
+  geom_abline(intercept = 0, slope = 1, size = 0.4) + 
+  scale_x_continuous(breaks = c(-200000, -100000, 0, 100000, 200000), labels = c("-200", "-100", "0", "100", "200"), limits = c(-200000, 250000)) +
+  scale_y_continuous(breaks = c(-100000, 0, 100000), labels = c("-100", "0", "100"), limits = c(-150000, 200000)) +
+  xlab("Cluster Mean Wealth Index (000s)") + ylab("Predicted Wealth Index (000s)") +
+  ggtitle("Reproduction") + 
+  theme_minimal() +
+  theme(panel.border = element_rect(size = 1, fill = NA, color = "darkgrey"),
+        plot.title = element_text(vjust = - 10, hjust = 0.05, size = 24),
+        axis.title = element_text(face = "bold", size = 20),
+        axis.text = element_text(size = 18),
+        legend.position = "none") 
+  
+plot.reproduction 
+ggsave("../Data Exports/Figures/Fatehkia_Reproduction.png", plot = plot.reproduction, width = 8.5, height = 6)
+
+############################
+
+# MLR
+# MAE Analysis and also the spread
+mae_wealth_lm <- plot_mae_for_different_levels(wealth_data, pred_wealth, "Wealth_Index")
+print((mae_wealth_lm[4]-mae_wealth_lm[3])/diff(range(mae_wealth_lm[1:3])))
+
+# GBM
+# MAE Analysis and also the spread
+mae_wealth_tr <- plot_mae_for_different_levels(wealth_data, pred_wealth_gbm, "Wealth_Index")
+print((mae_wealth_tr[4]-mae_wealth_tr[3])/diff(range(mae_wealth_tr[1:3])))
+
+# Quantile the wealth index
+quantiles_wealth <- quantile(wealth_data$Wealth_Index)
+
+```
+
+## Linear Regression predicting multidimensional poverty
+
+```{r}
+# Prep
+colnames(geo_mpi_fb)
+to_be_exlcuded_prior <- 5
+start_again <- 7
+end_excluding <- 20
+
+# Child Mortality
+d_cm_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+3), (start_again+3):end_excluding, 44:250)]
+m_child_mortality <- lm(log(d_cm+1) ~., data = d_cm_data)
+pred_child_mort <- predict(m_child_mortality, d_cm_data[,-1])
+summary(m_child_mortality)$r.squared
+plot_fit(pred_child_mort, m_child_mortality, d_cm_data, "d_cm", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_cm ~., data=d_cm_data) 
+y <- d_cm_data$d_cm
+mpv_cm <- display_most_predictive_vars(x,y)
+
+
+# Nutrition
+nutrition_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+4), (start_again+4):end_excluding, 44:250)]
+m_nutrition <- lm(log(d_nutr+1) ~., data = nutrition_data)
+pred_nutrition <- predict(m_nutrition, nutrition_data[,-1])
+summary(m_nutrition)$r.squared
+plot_fit(pred_nutrition, m_nutrition, nutrition_data, "d_nutr", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_nutr ~., data=nutrition_data) 
+y <- nutrition_data$d_nutr
+mpv_nutrition <- display_most_predictive_vars(x,y)
+
+
+# School Attendance
+satt_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+5), (start_again+5):end_excluding, 44:250)]
+m_school_attendance <- lm(log(d_satt+1) ~., data = satt_data)
+pred_school_attendance <- predict(m_school_attendance, satt_data[,-1])
+summary(m_school_attendance)$r.squared
+plot_fit(pred_school_attendance, m_school_attendance, satt_data, "d_satt", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_satt ~., data=satt_data) 
+y <- satt_data$d_satt
+mpv_satt <- display_most_predictive_vars(x,y)
+
+
+# Educational achievement
+education_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+6), (start_again+6):end_excluding, 44:250)]
+m_education_achievement <- lm(log(d_educ+1) ~., data = education_data)
+pred_education <- predict(m_education_achievement, education_data[,-1])
+summary(m_education_achievement)$r.squared
+plot_fit(pred_education, m_education_achievement, education_data, "d_educ", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_educ ~., data=education_data) 
+y <- education_data$d_educ
+mpv_education <- display_most_predictive_vars(x,y)
+
+
+# Electricity
+electricity_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+7), (start_again+7):end_excluding, 44:250)]
+m_electricity <- lm(log(d_elct+1) ~., data = electricity_data)
+pred_electricity <- predict(m_electricity, electricity_data[,-1])
+summary(m_electricity)$r.squared
+plot_fit(pred_electricity, m_electricity, electricity_data, "d_elct", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_elct ~., data=electricity_data) 
+y <- electricity_data$d_elct
+mpv_elct <- display_most_predictive_vars(x,y)
+
+
+# Drinking Water
+water_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+8), (start_again+8):end_excluding, 44:250)]
+m_water <- lm(log(d_wtr+1) ~., data = water_data)
+pred_water <- predict(m_water, water_data[,-1])
+summary(m_water)$r.squared
+plot_fit(pred_water, m_water, water_data, "d_wtr", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_wtr ~., data=water_data) 
+y <- water_data$d_wtr
+mpv_water <- display_most_predictive_vars(x,y)
+
+
+# Sanitary Facilities
+sani_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+9), (start_again+9):end_excluding, 44:250)]
+m_sanitation <- lm(log(d_sani+1) ~., data = sani_data)
+pred_sani <- predict(m_sanitation, sani_data[,-1])
+summary(m_sanitation)$r.squared
+plot_fit(pred_sani, m_sanitation, sani_data, "d_sani", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_sani ~., data=sani_data) 
+y <- sani_data$d_sani
+mpv_sani <- display_most_predictive_vars(x,y)
+
+
+# Housing Materials
+housing_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+10), (start_again+10):end_excluding, 44:250)]
+m_housing <- lm(log(d_hsg+1) ~., data = housing_data)
+pred_housing <- predict(m_housing, housing_data[,-1])
+summary(m_housing)$r.squared
+plot_fit(pred_housing, m_housing, housing_data, "d_hsg", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_hsg ~., data=housing_data) 
+y <- housing_data$d_hsg
+mpv_housing <- display_most_predictive_vars(x,y)
+
+
+# cooking Fuel
+cooking_fuel_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+11), (start_again+11):end_excluding, 44:250)]
+m_cooking_fuel <- lm(log(d_ckfl+1) ~., data = cooking_fuel_data)
+pred_cooking_fuel <- predict(m_cooking_fuel, cooking_fuel_data[,-1])
+summary(m_cooking_fuel)$r.squared
+plot_fit(pred_cooking_fuel, m_cooking_fuel, cooking_fuel_data, "d_ckfl", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_ckfl ~., data=cooking_fuel_data) 
+y <- cooking_fuel_data$d_ckfl
+mpv_cooking_fuel <- display_most_predictive_vars(x,y)
+
+
+# Assets
+assets_data <- geo_mpi_fb[,-c(1:(to_be_exlcuded_prior+12), (start_again+12):end_excluding, 44:250)]
+m_assets <- lm(log(d_asst+1) ~., data = assets_data)
+pred_assets <- predict(m_assets, assets_data[,-1])
+summary(m_assets)$r.squared
+plot_fit(pred_assets, m_assets, assets_data, "d_asst", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+x <- model.matrix(d_asst ~., data=assets_data) 
+y <- assets_data$d_asst
+mpv_assets <- display_most_predictive_vars(x,y)
+
+```
+
+
+## Cross Validation
+
+```{r}
+
+########################################## 10-fold Cross Validation Linear Regression
+
+# Cross validate all and create Boxplot from Head et al. (2018)
+cm_lm <- cross_validated_lm(data = d_cm_data, folds = 10)
+cm_cv_rsquared <- cm_lm[[1]]
+cm_model <- cm_lm[[2]]
+nutrition_lm <- cross_validated_lm(data = nutrition_data, folds = 10)
+nutrition_cv_rsquared <- nutrition_lm[[1]]
+nutrition_model <- nutrition_lm[[2]]
+satt_lm <- cross_validated_lm(data = satt_data, folds = 10)
+satt_cv_rsquared <- satt_lm[[1]]
+satt_model <- satt_lm[[2]]
+education_lm <- cross_validated_lm(data = education_data, folds = 10)
+education_cv_rsquared <- education_lm[[1]]
+education_model <- education_lm[[2]]
+electricity_lm <- cross_validated_lm(data = electricity_data, folds = 10)
+electricity_cv_rsquared <- electricity_lm[[1]]
+electricity_model <- electricity_lm[[2]]
+water_lm <- cross_validated_lm(data = water_data, folds = 10)
+water_cv_rsquared <- water_lm[[1]]
+water_model <- water_lm[[2]]
+sani_lm <- cross_validated_lm(data = sani_data, folds = 10)
+sani_cv_rsquared <- sani_lm[[1]]
+sani_model <- sani_lm[[2]]
+housing_lm <- cross_validated_lm(data = housing_data, folds = 10)
+housing_cv_rsquared <- housing_lm[[1]]
+housing_model <- housing_lm[[2]]
+cooking_fuel_lm <- cross_validated_lm(data = cooking_fuel_data, folds = 10)
+cooking_fuel_cv_rsquared <- cooking_fuel_lm[[1]]
+cooking_fuel_model <- cooking_fuel_lm[[2]]
+assets_lm <- cross_validated_lm(data = assets_data, folds = 10)
+assets_cv_rsquared <- assets_lm[[1]]
+assets_model <- assets_lm[[2]]
+
+
+
+# Setup Variable Names
+variables_full <- c("MPI", "Share Deprived", "Average Intensity", "Child Mortality", "Nutrition", "School Attendance", "Education", "Electricity", "Drinking Water", "Sanitation", "Housing", "Cooking Fuel", "Assets")
+
+# Make df
+rsquared_df <- data.frame(cm_cv_rsquared, nutrition_cv_rsquared, satt_cv_rsquared, education_cv_rsquared, electricity_cv_rsquared, water_cv_rsquared, sani_cv_rsquared, housing_cv_rsquared, cooking_fuel_cv_rsquared, assets_cv_rsquared)
+
+# Change colnames to variable names
+colnames(rsquared_df) <- variables_full[4:13]
+
+# Pivot Long and facotrise indicator column
+rsquared_df_long <- rsquared_df %>% pivot_longer(cols = `Child Mortality`:Assets, names_to = "Indicator", values_to = "r_squared")
+rsquared_df_long$Indicator <- factor(rsquared_df_long$Indicator , levels=rev(variables_full[4:13]))
+
+# Boxplot basic
+boxplot_cv_rsqurared <- ggplot(data = rsquared_df_long, aes(x=r_squared, y=Indicator)) +
+    geom_boxplot() +
+    theme_minimal() +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    ggtitle("5-fold Cross-Validated R-squared estimates of Linear Models") +
+    xlab("")
+
+
+r2_mean_df <- rsquared_df_long %>%
+  group_by(Indicator) %>%
+  summarise(mean_r2 = mean(r_squared),
+            max_r2 = max(r_squared)) %>%
+  arrange(rev(Indicator))
+
+# Geom Point
+pointplot_cv_rsqurared <- ggplot(data = rsquared_df_long, aes(x=r_squared, y=Indicator)) +
+  geom_point(aes(colour = r_squared), size = 6) +
+  geom_text(data = r2_mean_df, aes(x = max_r2, y=Indicator, label = paste("~", format(round(mean_r2,2), nsmall = 0))), vjust = 0.5, hjust = -0.3, size = 6) + 
+  scale_color_viridis(discrete = FALSE, alpha=0.6) +
+  xlim(0, 0.52) +
+  theme_minimal() +
+  theme(legend.position="none",
+        plot.title = element_text(size=22), 
+        axis.text.y = element_text(size = 20),
+        axis.title.x = element_text(size = 18, margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(size = 16)) +
+  ggtitle("5-fold Cross-Validated r2-Scores of Linear Models") +
+  xlab("R2 Score")
+
+ggsave("../Data Exports/Figures/cv_rsquared.png", plot = pointplot_cv_rsqurared, width = 10, height = 10)
+
+
+
+########################################### 10-fold Cross Validation Regression Tree
+#
+## Cross validate all and create Boxplot from Head et al. (2018)
+#gbm_cm <- cross_validated_gbm(data = d_cm_data, folds = 10)
+#gbm_cm_cv_rsquared <- gbm_cm[[1]]
+#gbm_cm_model <- gbm_cm[[2]]
+#gbm_nutrition <- cross_validated_gbm(data = nutrition_data, folds = 10)
+#gbm_nutrition_cv_rsquared <- gbm_nutrition[[1]]
+#gbm_nutrition_model <- gbm_nutrition[[2]]
+#gbm_satt <- cross_validated_gbm(data = satt_data, folds = 10)
+#gbm_satt_cv_rsquared <- gbm_satt[[1]]
+#gbm_satt_model <- gbm_satt[[2]]
+#gbm_education <- cross_validated_gbm(data = education_data, folds = 10)
+#gbm_education_cv_rsquared <- gbm_education[[1]]
+#gbm_education_model <- gbm_education[[2]]
+#gbm_electricity <- cross_validated_gbm(data = electricity_data, folds = 10)
+#gbm_electricity_cv_rsquared <- gbm_electricity[[1]]
+#gbm_electricity_model <- gbm_electricity[[2]]
+#gbm_water <- cross_validated_gbm(data = water_data, folds = 10)
+#gbm_water_cv_rsquared <- gbm_water[[1]]
+#gbm_water_model <- gbm_water[[2]]
+#gbm_sani <- cross_validated_gbm(data = sani_data, folds = 10)
+#gbm_sani_cv_rsquared <- gbm_sani[[1]]
+#gbm_sani_model <- gbm_sani[[2]]
+#gbm_housing <- cross_validated_gbm(data = housing_data, folds = 10)
+#gbm_housing_cv_rsquared <- gbm_housing[[1]]
+#gbm_housing_model <- gbm_housing[[2]]
+#gbm_cooking_fuel <- cross_validated_gbm(data = cooking_fuel_data, folds = 10)
+#gbm_cooking_fuel_cv_rsquared <- gbm_cooking_fuel[[1]]
+#gbm_cooking_fuel_model <- gbm_cooking_fuel[[2]]
+#gbm_assets <- cross_validated_gbm(data = assets_data, folds = 10)
+#gbm_assets_cv_rsquared <- gbm_assets[[1]]
+#gbm_assets_model <- gbm_assets[[2]]
+#
+#save(gbm_cm_model, 
+#     gbm_nutrition_model, 
+#     gbm_satt_model, 
+#     gbm_education_model, 
+#     gbm_electricity_model, 
+#     gbm_water_model, 
+#     gbm_sani_model,
+#     gbm_housing_model,
+#     gbm_cooking_fuel_model,
+#     gbm_assets_model,
+#     file = "../Data Exports/Code/gbm_models.RData")
+#
+## Make df
+#gbm_rsquared_df <- data.frame(gbm_cm_cv_rsquared, gbm_nutrition_cv_rsquared, gbm_satt_cv_rsquared, gbm_education_cv_rsquared, #gbm_electricity_cv_rsquared, gbm_water_cv_rsquared, gbm_sani_cv_rsquared, gbm_housing_cv_rsquared, gbm_cooking_fuel_cv_rsquared, #gbm_assets_cv_rsquared)
+#
+## Change colnames to variable names
+#colnames(gbm_rsquared_df) <- variables_full[4:13]
+#
+## Pivot Long and factorise indicator column
+#gbm_rsquared_df_long <- gbm_rsquared_df %>% pivot_longer(cols = `Child Mortality`:Assets, names_to = "Indicator", values_to = "r_squared")
+#gbm_rsquared_df_long$Indicator <- factor(gbm_rsquared_df_long$Indicator , levels=rev(variables_full[4:13]))
+#
+## Boxplot basic
+#gbm_boxplot_cv_rsqurared <- ggplot(data = gbm_rsquared_df_long, aes(x=r_squared, y=Indicator)) +
+#    geom_boxplot() +
+#    theme_minimal() +
+#    theme(
+#      legend.position="none",
+#      plot.title = element_text(size=11)
+#    ) +
+#    ggtitle("5-fold Cross-Validated R-squared estimates of Tree Models") +
+#    xlab("")
+#
+#
+#gbm_r2_mean_df <- gbm_rsquared_df_long %>%
+#  group_by(Indicator) %>%
+#  summarise(mean_r2 = mean(r_squared),
+#            max_r2 = max(r_squared)) %>%
+#  arrange(rev(Indicator))
+#
+## Geom Point
+#gbm_pointplot_cv_rsqurared <- ggplot(data = gbm_rsquared_df_long, aes(x=r_squared, y=Indicator)) +
+#  geom_point(aes(colour = r_squared), size = 6) +
+#  geom_text(data = gbm_r2_mean_df, aes(x = max_r2, y=Indicator, label = paste("~", format(round(mean_r2,2), nsmall = 0))), vjust = 0.5, hjust = #-0.3, size = 6) + 
+#  scale_color_viridis(discrete = FALSE, alpha=0.6) +
+#  xlim(0, 0.54) +
+#  theme_minimal() +
+#  theme(legend.position="none",
+#        plot.title = element_text(size=22), 
+#        axis.text.y = element_text(size = 20),
+#        axis.title.x = element_text(size = 18, margin = margin(t = 20, r = 0, b = 0, l = 0)),
+#        axis.title.y = element_blank(),
+#        axis.text.x = element_text(size = 16)) +
+#  ggtitle("5-fold Cross-Validated r2-Scores of Tree Models") +
+#  xlab("R2 Score")
+#
+#ggsave("../Data Exports/Figures/gbm_cv_rsquared.png", plot = gbm_pointplot_cv_rsqurared, width = 10, height = 10)
+
+
+
+########################################## 10-fold Cross Validation Regression Tree with LOG
+
+# Cross validate all and create Boxplot from Head et al. (2018)
+#log_gbm_cm <- cross_validated_gbm(data = d_cm_data, folds = 10, log_1_trans = T)
+#log_gbm_cm_cv_rsquared <- log_gbm_cm[[1]]
+#log_gbm_cm_model <- log_gbm_cm[[2]]
+#log_gbm_nutrition <- cross_validated_gbm(data = nutrition_data, folds = 10, log_1_trans = T)
+#log_gbm_nutrition_cv_rsquared <- log_gbm_nutrition[[1]]
+#log_gbm_nutrition_model <- log_gbm_nutrition[[2]]
+#log_gbm_satt <- cross_validated_gbm(data = satt_data, folds = 10, log_1_trans = T)
+#log_gbm_satt_cv_rsquared <- log_gbm_satt[[1]]
+#log_gbm_satt_model <- log_gbm_satt[[2]]
+#log_gbm_education <- cross_validated_gbm(data = education_data, folds = 10, log_1_trans = T)
+#log_gbm_education_cv_rsquared <- log_gbm_education[[1]]
+#log_gbm_education_model <- log_gbm_education[[2]]
+#log_gbm_electricity <- cross_validated_gbm(data = electricity_data, folds = 10, log_1_trans = T)
+#log_gbm_electricity_cv_rsquared <- log_gbm_electricity[[1]]
+#log_gbm_electricity_model <- log_gbm_electricity[[2]]
+#log_gbm_water <- cross_validated_gbm(data = water_data, folds = 10, log_1_trans = T)
+#log_gbm_water_cv_rsquared <- log_gbm_water[[1]]
+#log_gbm_water_model <- log_gbm_water[[2]]
+#log_gbm_sani <- cross_validated_gbm(data = sani_data, folds = 10, log_1_trans = T)
+#log_gbm_sani_cv_rsquared <- log_gbm_sani[[1]]
+#log_gbm_sani_model <- log_gbm_sani[[2]]
+#log_gbm_housing <- cross_validated_gbm(data = housing_data, folds = 10, log_1_trans = T)
+#log_gbm_housing_cv_rsquared <- log_gbm_housing[[1]]
+#log_gbm_housing_model <- log_gbm_housing[[2]]
+#log_gbm_cooking_fuel <- cross_validated_gbm(data = cooking_fuel_data, folds = 10, log_1_trans = T)
+#log_gbm_cooking_fuel_cv_rsquared <- log_gbm_cooking_fuel[[1]]
+#log_gbm_cooking_fuel_model <- log_gbm_cooking_fuel[[2]]
+#log_gbm_assets <- cross_validated_gbm(data = assets_data, folds = 10, log_1_trans = T)
+#log_gbm_assets_cv_rsquared <- log_gbm_assets[[1]]
+#log_gbm_assets_model <- log_gbm_assets[[2]]
+#
+#save(log_gbm_cm_cv_rsquared, 
+#     log_gbm_nutrition_cv_rsquared, 
+#     log_gbm_satt_cv_rsquared, 
+#     log_gbm_education_cv_rsquared, 
+#     log_gbm_electricity_cv_rsquared, 
+#     log_gbm_water_cv_rsquared, 
+#     log_gbm_sani_cv_rsquared,
+#     log_gbm_housing_cv_rsquared,
+#     log_gbm_cooking_fuel_cv_rsquared,
+#     log_gbm_assets_cv_rsquared,
+#     file = "../Data Exports/Code/gbm_log_cv_rsquared.RData")
+#
+#save(log_gbm_cm_model, 
+#     log_gbm_nutrition_model, 
+#     log_gbm_satt_model, 
+#     log_gbm_education_model, 
+#     log_gbm_electricity_model, 
+#     log_gbm_water_model, 
+#     log_gbm_sani_model,
+#     log_gbm_housing_model,
+#     log_gbm_cooking_fuel_model,
+#     log_gbm_assets_model,
+#     file = "../Data Exports/Code/gbm_log_models.RData")
+
+load("../Data Exports/Code/gbm_log_models.RData")
+load("../Data Exports/Code/gbm_log_cv_rsquared.RData")
+
+# Compute predictions
+pred_log_gbm_cm <- predict.gbm(log_gbm_cm_model, d_cm_data[,-1])
+pred_log_gbm_nutrition <- predict.gbm(log_gbm_nutrition_model, nutrition_data[,-1])
+pred_log_gbm_satt <- predict.gbm(log_gbm_satt_model, satt_data[,-1])
+pred_log_gbm_education <- predict.gbm(log_gbm_education_model, education_data[,-1])
+pred_log_gbm_electricity <- predict.gbm(log_gbm_electricity_model, electricity_data[,-1])
+pred_log_gbm_water <- predict.gbm(log_gbm_water_model, water_data[,-1])
+pred_log_gbm_sani <- predict.gbm(log_gbm_sani_model, sani_data[,-1])
+pred_log_gbm_housing <- predict.gbm(log_gbm_housing_model, housing_data[,-1])
+pred_log_gbm_cooking_fuel <- predict.gbm(log_gbm_cooking_fuel_model, cooking_fuel_data[,-1]) # Urban is overpredicted and rural underpredicted
+pred_log_gbm_assets <- predict.gbm(log_gbm_assets_model, assets_data[,-1])
+
+# Make df
+log_gbm_rsquared_df <- data.frame(log_gbm_cm_cv_rsquared, log_gbm_nutrition_cv_rsquared, log_gbm_satt_cv_rsquared, log_gbm_education_cv_rsquared, log_gbm_electricity_cv_rsquared, log_gbm_water_cv_rsquared, log_gbm_sani_cv_rsquared, log_gbm_housing_cv_rsquared, log_gbm_cooking_fuel_cv_rsquared, log_gbm_assets_cv_rsquared)
+
+# Change colnames to variable names
+colnames(log_gbm_rsquared_df) <- variables_full[4:13]
+
+# Pivot Long and factorise indicator column
+log_gbm_rsquared_df_long <- log_gbm_rsquared_df %>% pivot_longer(cols = `Child Mortality`:Assets, names_to = "Indicator", values_to = "r_squared")
+log_gbm_rsquared_df_long$Indicator <- factor(log_gbm_rsquared_df_long$Indicator , levels=rev(variables_full[4:13]))
+
+# Boxplot basic
+log_gbm_boxplot_cv_rsqurared <- ggplot(data = log_gbm_rsquared_df_long, aes(x=r_squared, y=Indicator)) +
+    geom_boxplot() +
+    theme_minimal() +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    ggtitle("5-fold Cross-Validated R-squared estimates of Tree Models") +
+    xlab("")
+
+
+log_gbm_r2_mean_df <- log_gbm_rsquared_df_long %>%
+  group_by(Indicator) %>%
+  summarise(mean_r2 = mean(r_squared),
+            max_r2 = max(r_squared)) %>%
+  arrange(rev(Indicator))
+
+# Geom Point
+log_gbm_pointplot_cv_rsqurared <- ggplot(data = log_gbm_rsquared_df_long, aes(x=r_squared, y=Indicator)) +
+  geom_point(aes(colour = r_squared), size = 6) +
+  geom_text(data = log_gbm_r2_mean_df, aes(x = max_r2, y=Indicator, label = paste("~", format(round(mean_r2,2), nsmall = 0))), vjust = 0.5, hjust = -0.3, size = 6) + 
+  scale_color_viridis(discrete = FALSE, alpha=0.6) +
+  xlim(0, 0.54) +
+  theme_minimal() +
+  theme(legend.position="none",
+        plot.title = element_text(size=22), 
+        axis.text.y = element_text(size = 20),
+        axis.title.x = element_text(size = 18, margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(size = 16)) +
+  ggtitle("5-fold Cross-Validated r2-Scores of Tree Models") +
+  xlab("R2 Score")
+
+ggsave("../Data Exports/Figures/log_gbm_cv_rsquared.png", plot = log_gbm_pointplot_cv_rsqurared, width = 10, height = 10)
+
+
+```
+## Plot the Linear Regressions
+
+```{r}
+
+# Data Prep
+colnames(d_cm_data)[1] <- "Indicator_deprivation_rate"
+colnames(nutrition_data)[1] <- "Indicator_deprivation_rate"
+colnames(satt_data)[1] <- "Indicator_deprivation_rate"
+colnames(education_data)[1] <- "Indicator_deprivation_rate"
+colnames(electricity_data)[1] <- "Indicator_deprivation_rate"
+colnames(water_data)[1] <- "Indicator_deprivation_rate"
+colnames(sani_data)[1] <- "Indicator_deprivation_rate"
+colnames(housing_data)[1] <- "Indicator_deprivation_rate"
+colnames(cooking_fuel_data)[1] <- "Indicator_deprivation_rate"
+colnames(assets_data)[1] <- "Indicator_deprivation_rate"
+
+# Combine data
+datas <- list(d_cm_data, nutrition_data, satt_data, education_data, electricity_data, water_data, sani_data, housing_data, cooking_fuel_data, assets_data)
+all_data <- plyr::rbind.fill(datas)
+variables <- c("Child Mortality", "Nutrition", "School Attendance", "Education", "Electricity", "Drinking Water", "Sanitation", "Housing", "Cooking Fuel", "Assets")
+all_data$Indicator <- rep(variables, each = nrow(d_cm_data))
+
+
+# Combine predictions
+all_preds <- c(pred_log_gbm_cm, pred_log_gbm_nutrition, pred_log_gbm_satt, pred_log_gbm_education, pred_log_gbm_electricity, pred_log_gbm_water, pred_log_gbm_sani, pred_log_gbm_housing, pred_log_gbm_cooking_fuel, pred_log_gbm_assets)
+all_data$prediction <- all_preds
+
+
+# To predict and show the fit on Plot
+# Get right colors
+colorsviridis <- viridis(100)
+color_sanitation <- "#71977d"
+color_housing <- "#71977d"
+color_cookingfuel <- "#71977d"
+color_cm <- "#3d4b89"
+color_satt <- "#3d4b89"
+color_water <- "#3d4b89"
+
+
+# Well predicted
+ggplot(data = all_data[all_data$Indicator == "Sanitation",], aes(x = Indicator_deprivation_rate, y = prediction)) +
+  geom_point(color = color_sanitation, size = 1, alpha = 0.4) +
+  geom_abline(intercept = 0, slope = 1, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dotted", size = 1) + 
+  xlab("Actual") + ylab("Predicted") +
+  scale_x_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1), labels = c("0%", "20%", "40%", "60%", "80%", "100%"), limits = c(0,1)) +
+  scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8), labels = c("0%", "20%", "40%", "60%", "80%"), limits = c(0,0.8)) +
+  ggtitle(paste("Sanitation")) + 
+  labs(subtitle = "r2 = 0.36") +
+  theme_minimal() + 
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(size = 0.25),
+        axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18),
+        axis.line.x = element_line(size = 0.5),
+        axis.ticks.x = element_line(size = 0.3),
+        axis.ticks.length.x = unit(5, "pt"),
+        plot.title = element_text(size = 24),
+        plot.subtitle = element_text(size = 18))
+ggsave("../Data Exports/Figures/fit_sanitation_tree.png", width = 8, height = 7)
+
+ggplot(data = all_data[all_data$Indicator == "Housing",], aes(x = Indicator_deprivation_rate, y = prediction)) +
+  geom_point(color = color_housing, size = 1, alpha = 0.4) +
+  geom_abline(intercept = 0, slope = 1, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dotted", size = 1) + 
+  xlab("Actual") + ylab("Predicted") +
+  scale_x_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1), labels = c("0%", "20%", "40%", "60%", "80%", "100%"), limits = c(0,1)) +
+  scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8), labels = c("0%", "20%", "40%", "60%", "80%"), limits = c(0,0.8)) +
+  ggtitle(paste("Housing")) + 
+  labs(subtitle = "r2 = 0.41") +
+  theme_minimal() + 
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(size = 0.25),
+        axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18),
+        axis.line.x = element_line(size = 0.5),
+        axis.ticks.x = element_line(size = 0.3),
+        axis.ticks.length.x = unit(5, "pt"),
+        plot.title = element_text(size = 24),
+        plot.subtitle = element_text(size = 18))
+ggsave("../Data Exports/Figures/fit_housing_tree.png", width = 8, height = 7)
+
+ggplot(data = all_data[all_data$Indicator == "Cooking Fuel",], aes(x = Indicator_deprivation_rate, y = prediction)) +
+  geom_point(color = color_cookingfuel, size = 1, alpha = 0.4) +
+  geom_abline(intercept = 0, slope = 1, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dotted", size = 1) + 
+  xlab("Actual") + ylab("Predicted") +
+  scale_x_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1), labels = c("0%", "20%", "40%", "60%", "80%", "100%"), limits = c(0,1)) +
+  scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8), labels = c("0%", "20%", "40%", "60%", "80%"), limits = c(0,0.8)) +
+  ggtitle(paste("Cooking Fuel")) + 
+  labs(subtitle = "r2 = 0.46") +
+  theme_minimal() + 
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(size = 0.25),
+        axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18),
+        axis.line.x = element_line(size = 0.5),
+        axis.ticks.x = element_line(size = 0.3),
+        axis.ticks.length.x = unit(5, "pt"),
+        plot.title = element_text(size = 24),
+        plot.subtitle = element_text(size = 18))
+ggsave("../Data Exports/Figures/fit_cooking_fuel_tree.png", width = 8, height = 7)
+
+#################### Poorly predicted
+ggplot(data = all_data[all_data$Indicator == "Child Mortality",], aes(x = Indicator_deprivation_rate, y = prediction)) +
+  geom_point(color = color_cm, size = 1, alpha = 0.4) +
+  geom_abline(intercept = 0, slope = 1, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dotted", size = 1) + 
+  xlab("Actual") + ylab("Predicted") +
+  scale_x_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1), labels = c("0%", "20%", "40%", "60%", "80%", "100%"), limits = c(0,1)) +
+  scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8), labels = c("0%", "20%", "40%", "60%", "80%"), limits = c(0,0.8)) +
+  ggtitle(paste("Child Mortality")) + 
+  labs(subtitle = "r2 = 0.06") +
+  theme_minimal() + 
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(size = 0.25),
+        axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18),
+        axis.line.x = element_line(size = 0.5),
+        axis.ticks.x = element_line(size = 0.3),
+        axis.ticks.length.x = unit(5, "pt"),
+        plot.title = element_text(size = 24),
+        plot.subtitle = element_text(size = 18))
+ggsave("../Data Exports/Figures/fit_cm_tree.png", width = 8, height = 7)
+
+ggplot(data = all_data[all_data$Indicator == "School Attendance",], aes(x = Indicator_deprivation_rate, y = prediction)) +
+  geom_point(color = color_satt, size = 1, alpha = 0.4) +
+  geom_abline(intercept = 0, slope = 1, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dotted", size = 1) + 
+  xlab("Actual") + ylab("Predicted") +
+  scale_x_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1), labels = c("0%", "20%", "40%", "60%", "80%", "100%"), limits = c(0,1)) +
+  scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8), labels = c("0%", "20%", "40%", "60%", "80%"), limits = c(0,0.8)) +
+  ggtitle(paste("School Attendance")) + 
+  labs(subtitle = "r2 = 0.13") +
+  theme_minimal() + 
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(size = 0.25),
+        axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18),
+        axis.line.x = element_line(size = 0.5),
+        axis.ticks.x = element_line(size = 0.3),
+        axis.ticks.length.x = unit(5, "pt"),
+        plot.title = element_text(size = 24),
+        plot.subtitle = element_text(size = 18))
+ggsave("../Data Exports/Figures/fit_satt_tree.png", width = 8, height = 7)
+
+ggplot(data = all_data[all_data$Indicator == "Drinking Water",], aes(x = Indicator_deprivation_rate, y = prediction)) +
+  geom_point(color = color_water, size = 1, alpha = 0.4) +
+  geom_abline(intercept = 0, slope = 1, size = 1) + 
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dotted", size = 1) + 
+  xlab("Actual") + ylab("Predicted") +
+  scale_x_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1), labels = c("0%", "20%", "40%", "60%", "80%", "100%"), limits = c(0,1)) +
+  scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8), labels = c("0%", "20%", "40%", "60%", "80%"), limits = c(0,0.8)) +
+  ggtitle(paste("Drinking Water")) + 
+  labs(subtitle = "r2 = 0.13") +
+  theme_minimal() + 
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(size = 0.25),
+        axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18),
+        axis.line.x = element_line(size = 0.5),
+        axis.ticks.x = element_line(size = 0.3),
+        axis.ticks.length.x = unit(5, "pt"),
+        plot.title = element_text(size = 24),
+        plot.subtitle = element_text(size = 18))
+ggsave("../Data Exports/Figures/fit_water_tree.png", width = 8, height = 7)
+
+
+```
+
+
+## MAE Analysis
+
+```{r}
+
+# Change back colnames
+colnames(d_cm_data)[1] <- "d_cm"
+colnames(nutrition_data)[1] <- "d_nutr"
+colnames(satt_data)[1] <- "d_satt"
+colnames(education_data)[1] <- "d_educ"
+colnames(electricity_data)[1] <- "d_elct"
+colnames(water_data)[1] <- "d_wtr"
+colnames(sani_data)[1] <- "d_sani"
+colnames(housing_data)[1] <- "d_hsg"
+colnames(cooking_fuel_data)[1] <- "d_ckfl"
+colnames(assets_data)[1] <- "d_asst"
+
+# Plot the quantiles of each indicator
+# Bar plot, in different shades for each (viridis maybe), x from 0-1, and then you show the quantiles
+quantiles_cm <- quantile(d_cm_data[,1])[-1]
+quantiles_nutrition <- quantile(nutrition_data[,1])[-1]
+quantiles_satt <- quantile(satt_data[,1])[-1]
+quantiles_educ <- quantile(education_data[,1])[-1]
+quantiles_elct <- quantile(electricity_data[,1])[-1]
+quantiles_water <- quantile(water_data[,1])[-1]
+quantiles_sani <- quantile(sani_data[,1])[-1]
+quantiles_housing <- quantile(housing_data[,1])[-1]
+quantiles_cooking <- quantile(cooking_fuel_data[,1])[-1]
+quantiles_assets <- quantile(assets_data[,1])[-1]
+
+quantiles_df <- data.frame(quantiles_cm, quantiles_nutrition, quantiles_satt, quantiles_educ, quantiles_elct, quantiles_water, quantiles_sani, quantiles_housing, quantiles_cooking, quantiles_assets)
+
+quantiles_df_comp <- data.frame(Indicator = variables_full[4:13])
+quantiles_df_comp$`25%` <- unlist(quantiles_df[1,])
+quantiles_df_comp$`50%` <- unlist(quantiles_df[2,])
+quantiles_df_comp$`75%` <- unlist(quantiles_df[3,])
+quantiles_df_comp$`100%` <- unlist(quantiles_df[4,])
+quantiles_df_comp$Indicator <- factor(quantiles_df_comp$Indicator, levels=rev(variables_full))
+
+ggplot(data = quantiles_df_comp) +
+  geom_bar(aes(x = `100%`, y = Indicator, fill = "100%"), position="stack", stat="identity") +
+  geom_bar(aes(x = `75%`, y = Indicator , fill = "75%"), position="stack", stat="identity") + 
+  geom_bar(aes(x = `50%`, y = Indicator , fill = "50%"), position="stack", stat="identity") + 
+  geom_bar(aes(x = `25%`, y = Indicator , fill = "25%"), position="stack", stat="identity") + 
+  scale_fill_manual(name="Quantile", breaks = c("100%", "75%", "50%", "25%"), values = c("25%" =  "#BCE6FF", "50%" = "#88CDF6", "75%" = "#2D82B5", "100%" = "#015C92"), labels = c("Q4", "Q3", "Q2", "Q1")) +
+  scale_x_continuous(breaks = c(seq(0,1,0.1)), labels = c("0%", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%")) + 
+  xlab("Share of Households in Cluster Deprived") + ylab("") +
+  ggtitle("Distributions of Deprivation Rates of all Multidimensional Poverty Indicators") +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0, unit = "pt")),
+        axis.text.y = element_text(margin = margin(t = 0, r = -10, b = 0, l = 0, unit = "pt")))
+
+########################### Linear Regression
+# Child Mortality
+plot_mae_for_different_levels(d_cm_data, pred_child_mort, "d_cm")
+# Nutrition
+plot_mae_for_different_levels(nutrition_data, pred_nutrition, "d_nutr")
+# School Attendance
+plot_mae_for_different_levels(satt_data, pred_school_attendance, "d_satt")
+# Educational achievement
+plot_mae_for_different_levels(education_data, pred_education, "d_educ")
+# Electricity
+plot_mae_for_different_levels(electricity_data, pred_electricity, "d_elct")
+# Drinking Water
+plot_mae_for_different_levels(water_data, pred_water, "d_wtr")
+# Sanitary Facilities
+plot_mae_for_different_levels(sani_data, pred_sani, "d_sani")
+# Housing Materials
+plot_mae_for_different_levels(housing_data, pred_housing, "d_hsg")
+# cooking Fuel
+plot_mae_for_different_levels(cooking_fuel_data, pred_cooking_fuel, "d_ckfl")
+# Assets
+plot_mae_for_different_levels(assets_data, pred_assets, "d_asst")
+
+
+# Plot all mae for different levels on one plot 
+datas <- list(d_cm_data, nutrition_data, satt_data, education_data, electricity_data, water_data, sani_data, housing_data, cooking_fuel_data, assets_data)
+
+preds <- list(pred_child_mort, pred_nutrition, pred_school_attendance, pred_education, pred_electricity, pred_water, pred_sani, pred_housing, pred_cooking_fuel, pred_assets)
+
+variables <- colnames(geo_mpi_fb)[9:18]
+
+# Loop through all variables and make a list of maes in quantiles
+mae_all <- list()
+MRD_all <- list()
+MRD_marginal_no <- list()
+relative_diff_marginal_no <- list()
+diff_marginal_no <- list()
+count <- 1
+for(var_of_interest in variables){
+  
+  # Order
+  data_current <- datas[[count]]
+  # Adjusting ground truth null values to enable computation, following (Hodler Raschky 2014a)
+  data_current[data_current[,1] == 0,1] <- data_current[data_current[,1] == 0,1] + 0.01
+  order_rows <- order(data_current[,var_of_interest])
+  data_current <- data_current[order_rows,]
+  
+  pred_current <- preds[[count]]
+  pred_current <- pred_current[order_rows]
+  
+  mae_variable <- NULL
+  MRD_variable <- NULL
+  MRD_marginal_variable <- NULL
+  MRD_marginal_all_variable <- NULL
+  diff_marginal_variable <- NULL
+  
+  quantiles_var <- quantile(data_current[,var_of_interest])
+  print(var_of_interest)
+  
+  for(i in 2:length(quantiles_var)){
+    if(i == 2 | quantiles_var[i] == 0){
+      # If first quantile get the first mae which is the mean deviation of prediction from truth
+      mae_temp <- mean(abs(pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])] - data_current[,var_of_interest][data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])]), na.rm = T)
+      
+      # Add to quantiles  
+      mae_variable <- c(mae_variable, mae_temp)
+      }
+      else{
+        # For all other quantiles do the same only that the previous matters
+        mae_temp <- mean(abs(pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] > quantiles_var[i-1]] - data_current[,var_of_interest][data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] > quantiles_var[i-1]]), na.rm = T)
+      
+      # Add to quantiles  
+      mae_variable <- c(mae_variable, mae_temp)
+      }
+  }
+  
+  for(i in 2:length(quantiles_var)){
+    if(i == 2 | quantiles_var[i] == 0){
+      
+    # Compute mean absolute deviance for first or null quantiles
+    mean_absolute_deviance_temp.1 <- (pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])] / data_current[,var_of_interest][data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])]) -  1
+    
+      # Fix the NAN problem
+      idx <- is.infinite(mean_absolute_deviance_temp.1)
+      if(sum(idx) != 0){
+        pred_temp <- pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])]
+        pred_temp_nans <- pred_temp[idx]
+        mean_absolute_deviance_temp.1[idx] <- pred_temp_nans
+        mean_absolute_deviance_temp <- mean(abs(mean_absolute_deviance_temp.1), na.rm = T)
+      }
+      else{
+        mean_absolute_deviance_temp <- mean(abs(mean_absolute_deviance_temp.1), na.rm = T)
+      }
+      
+      # Add to quantiles  
+      MRD_variable <- c(MRD_variable, mean_absolute_deviance_temp)
+      }
+      else{
+        # For all other quantiles do the same only that the previous matters
+        mean_absolute_deviance_temp <- mean(abs((pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] > quantiles_var[i-1]] / data_current[,var_of_interest][data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] > quantiles_var[i-1]]) - 1), na.rm = T)  
+        
+        # Add to quantiles  
+      MRD_variable <- c(MRD_variable, mean_absolute_deviance_temp)
+    }
+  }
+  
+  ########################## Compute MRD for marginally deprived clusters relative to non-deprived clusters
+  # Non-deprived
+  mean_absolute_deviance_temp_no_marginal.1 <- mean(abs(pred_current[data_current[,var_of_interest] == 0])) # As that is just deviation from 0
+  # Marginally deprived (up to 10%)
+  mean_absolute_deviance_temp_no_marginal.2 <- mean(abs((pred_current[data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0] / data_current[,var_of_interest][data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0]) - 1))
+  
+  # Combine
+  MRD_marginal_variable <- c(mean_absolute_deviance_temp_no_marginal.1, mean_absolute_deviance_temp_no_marginal.2)
+  
+  
+   ########################## Compute relative difference for marginally deprived clusters relative to non-deprived clusters but all not mean
+  # Non-deprived
+  temp_no_marginal.1 <- pred_current[data_current[,var_of_interest] == 0] # As that is just deviation from 0
+  # Marginally deprived (up to 10%)
+  temp_no_marginal.2 <- (pred_current[data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0] / data_current[,var_of_interest][data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0]) - 1
+  
+  # Combine
+  relative_diff_marginal_no_variable <- list(temp_no_marginal.1, temp_no_marginal.2)
+  
+  
+  ########################### Compute the simple difference between prediction and actual for non- and marginally deprived clusters
+  temp_no_marginal.1_diff <- pred_current[data_current[,var_of_interest] == 0] # As that is just deviation from 0
+  # Marginally deprived (up to 10%)
+  temp_no_marginal.2_diff <- pred_current[data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0] - data_current[,var_of_interest][data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0]
+  
+  # Combine
+  diff_marginal_variable <- list(temp_no_marginal.1_diff, temp_no_marginal.2_diff)
+  
+  
+  # Increase count
+  mae_all[[count]] <- mae_variable
+  MRD_all[[count]] <- MRD_variable
+  MRD_marginal_no[[count]] <- MRD_marginal_variable
+  diff_marginal_no[[count]] <- diff_marginal_variable
+  relative_diff_marginal_no[[count]] <- relative_diff_marginal_no_variable
+  print(paste0("MAE: ", mae_variable))
+  print(paste0("MRD: ", MRD_variable))
+  print(paste0("MRD Marginal/No: ", MRD_marginal_variable))
+  print(paste0("MAE last deviance relative to rest: ", (mae_variable[4]-mae_variable[3])/diff(range(mae_variable[1:3]))))
+  print(paste0("MRD last deviance relative to rest: ", (MRD_variable[4]-MRD_variable[3])/diff(range(MRD_variable[1:3]))))
+  count <- count + 1
+}
+
+
+# Transform into dataframe
+#MAE
+mae_df <- data.frame(mae_all)
+colnames(mae_df) <- variables_full[4:13]
+mae_df_long <- pivot_longer(mae_df, everything(), names_to = "Variable")
+mae_df_long$quantile <- c(rep(1,10), rep(2,10), rep(3,10), rep(4,10))
+mae_df_long$Variable <- factor(mae_df_long$Variable, levels=rev(variables_full[4:13]))
+
+#MRD
+MRD_df <- data.frame(MRD_all)
+colnames(MRD_df) <- variables_full[4:13]
+MRD_df_long <- pivot_longer(MRD_df, everything(), names_to = "Variable")
+MRD_df_long$quantile <- c(rep(1,10), rep(2,10), rep(3,10), rep(4,10))
+MRD_df_long$Variable <- factor(MRD_df_long$Variable, levels=rev(variables_full[4:13]))
+
+# MRD Marginal/No
+MRD_marginalno_df <- data.frame(MRD_marginal_no)
+colnames(MRD_marginalno_df) <- variables_full[4:13]
+MRD_marginalno_df_long <- pivot_longer(MRD_marginalno_df, everything(), names_to = "Variable")
+MRD_marginalno_df_long$class <- c(rep("No Deprivation",10), rep("Marginal Deprivation",10))
+MRD_marginalno_df_long$Variable <- factor(MRD_marginalno_df_long$Variable, levels=rev(variables_full[4:13]))
+
+# Plot with lines
+mae_all_plot <- ggplot(data = mae_df_long) +
+  geom_line(aes(x = quantile, y = value, color = Variable)) +
+  xlab("Quantiles") + ylab("MAE") +
+  ggtitle(paste("MAE in different quantiles of deprivation")) + 
+  theme_minimal()
+mae_all_plot
+
+MRD_all_plot <- ggplot(data = MRD_df_long) +
+  geom_line(aes(x = quantile, y = value, color = Variable)) +
+  xlab("Quantiles") + ylab("MRD") +
+  ggtitle(paste("MRD in different quantiles of deprivation")) + 
+  theme_minimal()
+MRD_all_plot
+
+# Plot as heatmap for MAE
+plot_mae_heatmap <- ggplot(mae_df_long, aes(quantile, Variable, fill= value)) + 
+  geom_tile(colour = "white") +
+  geom_text(aes(label=round(value,2)), colour = "white") +
+  scale_fill_viridis(discrete=FALSE) + 
+  labs(title = "Mean Absolute Error of Each Model in Different Deprivation Quantiles") + 
+  xlab("Quantiles (low to high)") + ylab("") +
+  theme_minimal() + 
+  theme(
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    panel.grid = element_blank())
+plot_mae_heatmap
+
+ggsave("../Data Exports/Figures/mae_heatmap.png", plot = plot_mae_heatmap, width = 10, height = 10)
+
+# Plot as heatmap for MRD
+plot_MRD_heatmap <- ggplot(MRD_df_long, aes(quantile, Variable, fill= value)) + 
+  geom_tile(colour = "white") +
+  geom_text(aes(label=round(value,2)), colour = "white") +
+  scale_fill_viridis(discrete=FALSE) + 
+  labs(title = "Mean Average Deviation of Each Model in Different Deprivation Quantiles") + 
+  xlab("Quantiles (low to high)") + ylab("") +
+  theme_minimal() + 
+  theme(
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    panel.grid = element_blank())
+
+ggsave("../Data Exports/Figures/MRD_heatmap.png", plot = plot_MRD_heatmap, width = 10, height = 10)
+
+# Plot as heatmap for MRD Marginal/No
+plot_MRD_marginal_no_heatmap <- ggplot(MRD_marginalno_df_long, aes(class, Variable, fill= value)) + 
+  geom_tile(colour = "white") +
+  geom_text(aes(label=round(value,2)), colour = "white") +
+  scale_fill_viridis(discrete=FALSE) + 
+  labs(title = "Mean Average Deviation of Each Model for Non-Deprived & \nMarginally Deprived (10% and less) clusters") + 
+  xlab("") + ylab("") +
+  theme_minimal() + 
+  theme(
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    panel.grid = element_blank())
+
+ggsave("../Data Exports/Figures/MRD_heatmap_marginal_no.png", plot = plot_MRD_marginal_no_heatmap, width = 10, height = 10)
+
+
+########################### Tree Models
+# Child Mortality
+plot_mae_for_different_levels(d_cm_data, pred_log_gbm_cm, "d_cm")
+# Nutrition
+plot_mae_for_different_levels(nutrition_data, pred_log_gbm_nutrition, "d_nutr")
+# School Attendance
+plot_mae_for_different_levels(satt_data, pred_log_gbm_satt, "d_satt")
+# Educational achievement
+plot_mae_for_different_levels(education_data, pred_log_gbm_education, "d_educ")
+# Electricity
+plot_mae_for_different_levels(electricity_data, pred_log_gbm_electricity, "d_elct")
+# Drinking Water
+plot_mae_for_different_levels(water_data, pred_log_gbm_water, "d_wtr")
+# Sanitary Facilities
+plot_mae_for_different_levels(sani_data, pred_log_gbm_sani, "d_sani")
+# Housing Materials
+plot_mae_for_different_levels(housing_data, pred_log_gbm_housing, "d_hsg")
+# cooking Fuel
+plot_mae_for_different_levels(cooking_fuel_data, pred_log_gbm_cooking_fuel, "d_ckfl")
+# Assets
+plot_mae_for_different_levels(assets_data, pred_log_gbm_assets, "d_asst")
+
+# Plot all mae for different levels on one plot 
+datas_gbm <- list(d_cm_data, nutrition_data, satt_data, education_data, electricity_data, water_data, sani_data, housing_data, cooking_fuel_data, assets_data)
+
+preds_gbm <- list(pred_log_gbm_cm, pred_log_gbm_nutrition, pred_log_gbm_satt, pred_log_gbm_education, pred_log_gbm_electricity, pred_log_gbm_water, pred_log_gbm_sani, pred_log_gbm_housing, pred_log_gbm_cooking_fuel, pred_log_gbm_assets)
+
+variables_gbm <- colnames(geo_mpi_fb)[9:18]
+
+# Loop through all variables and make a list of maes in quantiles
+mae_all_gbm <- list()
+MRD_all_gbm <- list()
+MRD_marginal_no_gbm <- list()
+relative_diff_marginal_no_gbm <- list()
+diff_marginal_no_gbm <- list()
+count <- 1
+for(var_of_interest in variables_gbm){
+  
+  # Order
+  data_current <- datas_gbm[[count]]
+  order_rows <- order(data_current[,var_of_interest])
+  data_current <- data_current[order_rows,]
+  
+  pred_current <- preds_gbm[[count]]
+  pred_current <- pred_current[order_rows]
+  
+  mae_variable <- NULL
+  MRD_variable <- NULL
+  MRD_marginal_variable <- NULL
+  MRD_marginal_all_variable <- NULL
+  diff_marginal_variable <- NULL
+  
+  quantiles_var <- quantile(data_current[,var_of_interest])
+  print(var_of_interest)
+  
+  for(i in 2:length(quantiles_var)){
+    if(i == 2 | quantiles_var[i] == 0){
+      # If first quantile get the first mae which is the mean deviation of prediction from truth
+      mae_temp <- mean(abs(pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])] - data_current[,var_of_interest][data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])]), na.rm = T)
+      
+      # Add to quantiles  
+      mae_variable <- c(mae_variable, mae_temp)
+      }
+      else{
+        # For all other quantiles do the same only that the previous matters
+        mae_temp <- mean(abs(pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] > quantiles_var[i-1]] - data_current[,var_of_interest][data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] > quantiles_var[i-1]]), na.rm = T)
+      
+      # Add to quantiles  
+      mae_variable <- c(mae_variable, mae_temp)
+      }
+  }
+  
+  for(i in 2:length(quantiles_var)){
+    if(i == 2 | quantiles_var[i] == 0){
+      
+    # Compute mean absolute deviance for first or null quantiles
+    mean_absolute_deviance_temp.1 <- (pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])] / data_current[,var_of_interest][data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])]) - 1
+    
+      # Fix the NAN problem
+      idx <- is.infinite(mean_absolute_deviance_temp.1)
+      if(sum(idx) != 0){
+        pred_temp <- pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] >= min(data_current[,var_of_interest])]
+        pred_temp_nans <- pred_temp[idx]
+        mean_absolute_deviance_temp <- mean(abs(c(mean_absolute_deviance_temp.1[!is.infinite(mean_absolute_deviance_temp.1)], pred_temp_nans)), na.rm = T)
+      }
+      else{
+        mean_absolute_deviance_temp <- mean(abs(mean_absolute_deviance_temp.1), na.rm = T)
+      }
+      
+      # Add to quantiles  
+      MRD_variable <- c(MRD_variable, mean_absolute_deviance_temp)
+      }
+      else{
+        # For all other quantiles do the same only that the previous matters
+        mean_absolute_deviance_temp <- mean(abs((pred_current[data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] > quantiles_var[i-1]] / data_current[,var_of_interest][data_current[,var_of_interest] <= quantiles_var[i] & data_current[,var_of_interest] > quantiles_var[i-1]]) - 1), na.rm = T)  
+        
+        # Add to quantiles  
+      MRD_variable <- c(MRD_variable, mean_absolute_deviance_temp)
+    }
+  }
+  
+  ########################## Compute MRD for marginally deprived clusters relative to non-deprived clusters
+  # Non-deprived
+  mean_absolute_deviance_temp_no_marginal.1 <- mean(abs(pred_current[data_current[,var_of_interest] == 0])) # As that is just deviation from 0
+  # Marginally deprived (up to 10%)
+  mean_absolute_deviance_temp_no_marginal.2 <- mean(abs((pred_current[data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0] / data_current[,var_of_interest][data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0])- 1))
+  
+  # Combine
+  MRD_marginal_variable <- c(mean_absolute_deviance_temp_no_marginal.1, mean_absolute_deviance_temp_no_marginal.2)
+  
+  
+   ########################## Compute relative difference for marginally deprived clusters relative to non-deprived clusters but all not mean
+  # Non-deprived
+  temp_no_marginal.1 <- pred_current[data_current[,var_of_interest] == 0] # As that is just deviation from 0
+  # Marginally deprived (up to 10%)
+  temp_no_marginal.2 <- (pred_current[data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0] / data_current[,var_of_interest][data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0]) - 1
+  
+  # Combine
+  relative_diff_marginal_no_variable <- list(temp_no_marginal.1, temp_no_marginal.2)
+  
+  
+  ########################### Compute the simple difference between prediction and actual for non- and marginally deprived clusters
+  temp_no_marginal.1_diff <- pred_current[data_current[,var_of_interest] == 0] # As that is just deviation from 0
+  # Marginally deprived (up to 10%)
+  temp_no_marginal.2_diff <- pred_current[data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0] - data_current[,var_of_interest][data_current[,var_of_interest] <= 0.1 & data_current[,var_of_interest] > 0]
+  
+  # Combine
+  diff_marginal_variable <- list(temp_no_marginal.1_diff, temp_no_marginal.2_diff)
+  
+  
+  # Increase count
+  mae_all_gbm[[count]] <- mae_variable
+  MRD_all_gbm[[count]] <- MRD_variable
+  MRD_marginal_no_gbm[[count]] <- MRD_marginal_variable
+  diff_marginal_no_gbm[[count]] <- diff_marginal_variable
+  relative_diff_marginal_no_gbm[[count]] <- relative_diff_marginal_no_variable
+  print(paste0("MAE: ", mae_variable))
+  print(paste0("MRD: ", MRD_variable))
+  print(paste0("MRD Marginal/No: ", MRD_marginal_variable))
+  print(paste0("MAE last deviance relative to rest: ", (mae_variable[4]-mae_variable[3])/diff(range(mae_variable[1:3]))))
+  print(paste0("MRD last deviance relative to rest: ", (MRD_variable[4]-MRD_variable[3])/diff(range(MRD_variable[1:3]))))
+  count <- count + 1
+}
+
+# Transform into dataframe
+#MAE
+mae_gbm_df <- data.frame(mae_all_gbm)
+colnames(mae_gbm_df) <- variables_full[4:13]
+mae_gbm_df_long <- pivot_longer(mae_gbm_df, everything(), names_to = "Variable")
+mae_gbm_df_long$quantile <- c(rep(1,10), rep(2,10), rep(3,10), rep(4,10))
+mae_gbm_df_long$Variable <- factor(mae_gbm_df_long$Variable, levels=rev(variables_full[4:13]))
+
+#MRD
+MRD_gbm_df <- data.frame(MRD_all_gbm)
+colnames(MRD_gbm_df) <- variables_full[4:13]
+MRD_gbm_df_long <- pivot_longer(MRD_gbm_df, everything(), names_to = "Variable")
+MRD_gbm_df_long$quantile <- c(rep(1,10), rep(2,10), rep(3,10), rep(4,10))
+MRD_gbm_df_long$Variable <- factor(MRD_gbm_df_long$Variable, levels=rev(variables_full[4:13]))
+
+# MRD Marginal/No
+MRD_marginalno_gbm_df <- data.frame(MRD_marginal_no_gbm)
+colnames(MRD_marginalno_gbm_df) <- variables_full[4:13]
+MRD_marginalno_gbm_df_long <- pivot_longer(MRD_marginalno_gbm_df, everything(), names_to = "Variable")
+MRD_marginalno_gbm_df_long$class <- c(rep("No Deprivation",10), rep("Marginal Deprivation",10))
+MRD_marginalno_gbm_df_long$Variable <- factor(MRD_marginalno_gbm_df_long$Variable, levels=rev(variables_full[4:13]))
+
+# Plot with lines
+mae_all_plot_gbm <- ggplot(data = mae_gbm_df_long) +
+  geom_line(aes(x = quantile, y = value, color = Variable)) +
+  xlab("Quantiles") + ylab("MAE") +
+  ggtitle(paste("MAE in different quantiles of deprivation")) + 
+  theme_minimal()
+mae_all_plot_gbm
+
+MRD_all_plot_gbm <- ggplot(data = MRD_gbm_df_long) +
+  geom_line(aes(x = quantile, y = value, color = Variable)) +
+  xlab("Quantiles") + ylab("MRD") +
+  ggtitle(paste("MRD in different quantiles of deprivation")) + 
+  theme_minimal()
+MRD_all_plot_gbm
+
+# Plot as heatmap for MAE
+plot_mae_heatmap_gbm <- ggplot(mae_gbm_df_long, aes(quantile, Variable, fill= value)) + 
+  geom_tile(colour = "white") +
+  geom_text(aes(label=round(value,2)), colour = "white") +
+  scale_fill_viridis(discrete=FALSE) + 
+  labs(title = "Mean Absolute Error of Each Model in Different Deprivation Quantiles") + 
+  xlab("Quantiles (low to high)") + ylab("") +
+  theme_minimal() + 
+  theme(
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    panel.grid = element_blank())
+plot_mae_heatmap_gbm
+
+ggsave("../Data Exports/Figures/mae_heatmap_gbm.png", plot = plot_mae_heatmap_gbm, width = 10, height = 10)
+
+# Plot as heatmap for MRD
+plot_MRD_heatmap_gbm <- ggplot(MRD_gbm_df_long, aes(quantile, Variable, fill= value)) + 
+  geom_tile(colour = "white") +
+  geom_text(aes(label=round(value,2)), colour = "white") +
+  scale_fill_viridis(discrete=FALSE) + 
+  labs(title = "Mean Average Deviation of Each Model in Different Deprivation Quantiles") + 
+  xlab("Quantiles (low to high)") + ylab("") +
+  theme_minimal() + 
+  theme(
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    panel.grid = element_blank())
+
+ggsave("../Data Exports/Figures/MRD_heatmap_gbm.png", plot = plot_MRD_heatmap_gbm, width = 10, height = 10)
+
+# Plot as heatmap for MRD Marginal/No
+plot_MRD_marginal_no_heatmap_gbm <- ggplot(MRD_marginalno_gbm_df_long, aes(class, Variable, fill= value)) + 
+  geom_tile(colour = "white") +
+  geom_text(aes(label=round(value,2)), colour = "white") +
+  scale_fill_viridis(discrete=FALSE) + 
+  labs(title = "Mean Average Deviation of Each Model for Non-Deprived & \nMarginally Deprived (10% and less) clusters") + 
+  xlab("") + ylab("") +
+  theme_minimal() + 
+  theme(
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    panel.grid = element_blank())
+
+ggsave("../Data Exports/Figures/MRD_heatmap_marginal_no_gbm.png", plot = plot_MRD_marginal_no_heatmap_gbm, width = 10, height = 10)
+
+
+
+```
+
+## Prediction accuracy for marginally deprived clusters
+
+```{r}
+
+relative_diff_marginal_no[[1]]
+
+
+# Relative Difference
+boxplot_relative_difference <- function(list_mispred = diff_marginal_no, index_var = 4, title = NULL, xaxis = NULL){
+  # Diff Marginal/No
+  no_dep <- list_mispred[[index_var]][[1]]
+  marginal_dep <- list_mispred[[index_var]][[2]]
+  print(summary(no_dep))
+  print(summary(marginal_dep))
+  len_no <- length(no_dep)
+  len_marginal <- length(marginal_dep)
+  df <- data.frame(value = c(no_dep, marginal_dep))
+  df$class <- c(rep("No Deprivation",len_no), rep("Marginal Deprivation",len_marginal))
+  
+  print(variables_full[index_var])
+  
+  boxplot_mismatch <- ggplot(data = df, aes(x=value, y=class)) +
+    geom_boxplot() +
+      theme_minimal() +
+      theme(legend.position="none",
+            plot.title = element_text(size=11)) +
+      ggtitle(title) +
+      xlab(xaxis)
+  print(boxplot_mismatch)
+}
+
+# CM
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 1,
+                            title = "Child Mortality Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 1, 
+                            title = "Child Mortality Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+# Nutrition
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 2,
+                            title = "Nutrition Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 2, 
+                            title = "Nutrition Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+# School Attendance
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 3,
+                            title = "School Attendance Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 3, 
+                            title = "School Attendance Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+# Education
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 4,
+                            title = "Education Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 4, 
+                            title = "Education Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+# Electricity
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 5,
+                            title = "Electricity Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 5, 
+                            title = "Electricity Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+# Drinking Water
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 6,
+                            title = "Drinking Water Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 6, 
+                            title = "Drinking Water Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+# Sanitation
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 7,
+                            title = "Sanitation Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 7, 
+                            title = "Sanitation Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+# Housing
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 8,
+                            title = "Housing Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 8, 
+                            title = "Housing Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+# Cooking Fuel
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 9,
+                            title = "Cooking Fuel Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 9, 
+                            title = "Cooking Fuel Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+# Assets
+boxplot_relative_difference(list_mispred = diff_marginal_no, index_var = 10,
+                            title = "Assets Mismatch: Predictions - Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Misprediction")
+boxplot_relative_difference(list_mispred = relative_diff_marginal_no, index_var = 10, 
+                            title = "Assets Mismatch: Predictions / Ground Truth \n(only non-deprived & marginally deprived clusters)",
+                            xaxis = "Relative Misprediction")
+
+
+
+```
+
+
+## Explore and map most predictive features
+
+```{r}
+
+head(mpv_cm)
+tail(mpv_cm)
+head(mpv_nutrition)
+tail(mpv_nutrition)
+head(mpv_satt)
+tail(mpv_satt)
+head(mpv_education)
+tail(mpv_education)
+head(mpv_water)
+tail(mpv_water)
+head(mpv_sani)
+tail(mpv_sani)
+head(mpv_elct)
+tail(mpv_elct)
+head(mpv_housing)
+tail(mpv_housing)
+head(mpv_cooking_fuel)
+tail(mpv_cooking_fuel)
+head(mpv_assets)
+tail(mpv_assets)
+
+all_mpv <- rbind(mpv_cm, mpv_nutrition, mpv_satt, mpv_education, mpv_water, mpv_sani, mpv_elct, mpv_housing, mpv_cooking_fuel,mpv_assets)
+
+rownames_mpv <- rownames(all_mpv)
+rownames_mpv <- str_remove_all(rownames_mpv, "[0-9]$")
+
+all_mpv$coef_name <- rownames_mpv
+all_mpv %>%
+  group_by(coef_name) %>%
+  summarise(mean_coef = mean(coefficient),
+            std_coef = sd(coefficient)) %>%
+  arrange(mean_coef)
+
+
+########## Positive predictors of wealth & negative predictors of poverty
+# High_end_galaxy_phone_s9p_18p_All_frac
+# High_end_galaxy_phone_s9p_18p_Female_frac
+# High_end_galaxy_phone_S8_S8p_S9_S9p_High_end_apple_iphone_X_8_and_8p_18p_Male_frac
+# High_end_galaxy_phone_S8_S8p_S9_S9p_High_end_apple_iphone_X_8_and_8p_18p_All_frac
+# High_end_galaxy_phone_S8_S8p_S9_S9p_More_than_high_school_degree_18p_frac
+# Windows_phones_unknown_unspecified_18p_frac
+# Windows_phones_18p_All_frac
+# Windows_phones_18p_Female_frac
+# Windows_phones_High_school_degree_but_not_more_18p_frac
+# Windows_phones_More_than_high_school_degree_18p_frac
+# X2G_Network_High_school_degree_but_not_more_18p_frac
+# X2G_Network_18p_All_frac
+# X2G_Network_55p_frac
+# feature_Phones_18p_Female_frac
+# feature_Phones_35_to_54_frac
+# Cherry_mobile_All_educ_levels_18p_frac
+
+########## Negative predictors of wealth & Positive predictors of poverty
+# Cherry_mobile_All_educ_levels_18p_frac
+# High_end_galaxy_phone_s9p_18p_Female_frac
+# High_end_galaxy_phone_S8_S8p_S9_S9p_High_end_apple_iphone_X_8_and_8p_High_school_degree_but_not_more_18p_frac
+# Windows_phones_High_school_degree_but_not_more_18p_frac
+# Windows_phones_More_than_high_school_degree_18p_frac
+# Windows_phones_18p_Female_frac
+# iOS_55p_frac
+# tablet_55p_frac
+# X2G_Network_55p_frac
+# Wifi_High_school_degree_but_not_more_18p_frac
+
+```
+
+
+## Demographic Disaggregation
+
+```{r}
+
+
+# Set up functions for the process
+plot_demographic_disaggregation <- function(pred.1 = pred_1,
+                                            pred.2 = pred_2,
+                                            colour = "darkgreen", 
+                                            size = 0.25, 
+                                            title = "Age | Cooking Fuel",
+                                            xtitle = "Cooking Fuel Deprivation Rate Old 55p",
+                                            ytitle = "Cooking Fuel Deprivation Rate Young 18-34"){
+  
+  # Set up plot
+  plot <- ggplot() +
+    geom_point(aes(x = pred.1, y = pred.2, color = colour), size = size, alpha = 0.8) +
+    scale_color_viridis(name = "Facebook Penetration\nRates", discrete = TRUE) +
+    geom_abline(intercept = 0, slope = 1) + 
+    xlab(paste("Predicted", xtitle)) + ylab(paste("Predicted", ytitle)) +
+    ggtitle(paste("Demographic Disaggregation:", title)) + 
+    guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+    theme_minimal()
+  
+  print(plot)
+  ggsave(paste0("../Data Exports/Figures/Disaggregation ", title,".png"), width = 8, height = 8)
+}
+
+
+disaggregate_demographic <- function(data_1, data_2, indicator, demos, demographic_group.1, demographic_group.2, plotcolour = "darkgreen"){
+  
+  # Check each
+  if("cm" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_cm_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_cm_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- Child Mortality"),
+                                    xtitle = paste("Child Mortality Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("Child Mortality Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+  
+  if("nutr" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_nutrition_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_nutrition_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- Nutrition"),
+                                    xtitle = paste("Nutrition Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("Nutrition Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+  
+  if("satt" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_satt_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_satt_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- School Attendance"),
+                                    xtitle = paste("School Attendance Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("School Attendance Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+    
+  if("educ" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_education_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_education_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- Education"),
+                                    xtitle = paste("Education Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("Education Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+  
+  if("elct" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_electricity_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_electricity_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- Electricity"),
+                                    xtitle = paste("Electricity Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("Electricity Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+    
+  if("wtr" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_water_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_water_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- Drinking Water"),
+                                    xtitle = paste("Drinking Water Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("Drinking Water Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+    
+  if("sani" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_sani_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_sani_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- Sanitation"),
+                                    xtitle = paste("Sanitation Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("Sanitation Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+  
+  if("hsg" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_housing_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_housing_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- Housing"),
+                                    xtitle = paste("Housing Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("Housing Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+    
+  if("ckfl" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_cooking_fuel_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_cooking_fuel_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- Cooking Fuel"),
+                                    xtitle = paste("Cooking Fuel Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("Cooking Fuel Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+
+  if("asst" %in% indicator){
+    pred_1 <- predict.gbm(log_gbm_assets_model, data_1)
+    pred_2 <- predict.gbm(log_gbm_assets_model, data_2)
+    
+    plot_demographic_disaggregation(pred.1 = pred_1,
+                                    pred.2 = pred_2,
+                                    title = paste(demos,"- Assets"),
+                                    xtitle = paste("Assets Deprivation Rates", demographic_group.1),
+                                    ytitle = paste("Assets Deprivation Rates", demographic_group.2),
+                                    colour = plotcolour)
+  }
+  
+}
+
+
+# To colour plots
+# Compute the bracket of users in each cluster
+#FB_User_Bracket <- ifelse(geo_mpi_fb$FB_user_18p_All < 1000, "Less than 1k",
+#                          ifelse(geo_mpi_fb$FB_user_18p_All > 1000 & geo_mpi_fb$FB_user_18p_All < 5000, "1-5k",
+#                                 ifelse(geo_mpi_fb$FB_user_18p_All > 5000 & geo_mpi_fb$FB_user_18p_All < 10000, "5-10k",
+#                                        ifelse(geo_mpi_fb$FB_user_18p_All > 10000 & geo_mpi_fb$FB_user_18p_All < 100000, "10-100k", "More than 100k"))))
+
+FB_User_Bracket <- ifelse(geo_mpi_fb$FB_Penetration_18p < 0.05, "Less than 5%",
+                          ifelse(geo_mpi_fb$FB_Penetration_18p > 0.05 & geo_mpi_fb$FB_Penetration_18p < 0.1, "5-10%",
+                                 ifelse(geo_mpi_fb$FB_Penetration_18p > 0.1 & geo_mpi_fb$FB_Penetration_18p < 0.5, "10-50%", "More than 50%")))
+
+
+
+#FB_User_Bracket <- factor(FB_User_Bracket, levels = rev(c("Less than 1k", "1-5k", "5-10k", "10-100k", "More than 100k")))
+FB_User_Bracket <- factor(FB_User_Bracket, levels = rev(c("Less than 5%", "5-10%", "10-50%", "More than 50%")))
+
+
+# Enable predictions
+to_change_for_preds <- colnames(geo_mpi_fb)[21:43]
+
+# Set up Dataframes 
+# Gender
+gender_f_data <- geo_mpi_fb[,44:66]
+colnames(gender_f_data) <- to_change_for_preds
+gender_m_data <- geo_mpi_fb[,67:89]
+colnames(gender_m_data) <- to_change_for_preds
+
+# Age
+age_13_34_data <- geo_mpi_fb[,90:112]
+colnames(age_13_34_data) <- to_change_for_preds
+age_35_54_data <- geo_mpi_fb[,113:135]
+colnames(age_35_54_data) <- to_change_for_preds
+age_55p_data <- geo_mpi_fb[,136:158]
+colnames(age_55p_data) <- to_change_for_preds
+
+# Education
+education_all_data <- geo_mpi_fb[,159:181]
+colnames(education_all_data) <- to_change_for_preds
+education_highschool_notmore_data <- geo_mpi_fb[,182:204]
+colnames(education_highschool_notmore_data) <- to_change_for_preds
+education_morethan_highschool_data <- geo_mpi_fb[,205:227]
+colnames(education_morethan_highschool_data) <- to_change_for_preds
+education_unspecified_data <- geo_mpi_fb[,228:250]
+colnames(education_unspecified_data) <- to_change_for_preds
+
+
+### Gender
+disaggregate_demographic(data_1 = gender_f_data, data_2 = gender_m_data, 
+                         indicator = c("cm", "nutr", "satt", "educ", "elct", "wtr", "sani", "hsg", "ckfl", "asst"), 
+                         demos = "Gender", 
+                         demographic_group.1 = "Female", demographic_group.2 = "Male",
+                         plotcolour = FB_User_Bracket)
+
+# Age
+disaggregate_demographic(data_1 = age_13_34_data, data_2 = age_35_54_data, 
+                         indicator = c("cm", "nutr", "satt", "educ", "elct", "wtr", "sani", "hsg", "ckfl", "asst"), 
+                         demos = "Age", 
+                         demographic_group.1 = "Young 13 - 34", demographic_group.2 = "Mid 35 - 54",
+                         plotcolour = FB_User_Bracket)
+
+disaggregate_demographic(data_1 = age_13_34_data, data_2 = age_55p_data, 
+                         indicator = c("cm", "nutr", "satt", "educ", "elct", "wtr", "sani", "hsg", "ckfl", "asst"), 
+                         demos = "Age", 
+                         demographic_group.1 = "Young 13 - 34", demographic_group.2 = "Old 55p",
+                         plotcolour = FB_User_Bracket)
+
+disaggregate_demographic(data_1 = age_35_54_data, data_2 = age_55p_data, 
+                         indicator = c("cm", "nutr", "satt", "educ", "elct", "wtr", "sani", "hsg", "ckfl", "asst"), 
+                         demos = "Age", 
+                         demographic_group.1 = "Mid 35 - 54", demographic_group.2 = "Old 55p",
+                         plotcolour = FB_User_Bracket)
+
+# Education
+disaggregate_demographic(data_1 = education_highschool_notmore_data, data_2 = education_morethan_highschool_data, 
+                         indicator = c("cm", "nutr", "satt", "educ", "elct", "wtr", "sani", "hsg", "ckfl", "asst"), 
+                         demos = "Education", 
+                         demographic_group.1 = "Highschool But Not More", demographic_group.2 = "More Than Highschool",
+                         plotcolour = FB_User_Bracket)
+
+
+```
+
+
+
+
+## Map Predictions and Ground Truth on the Admin 2 level
+
+```{r}
+
+#ADM1NAME # ADM1
+#DHSREGNA # ADM2
+# Read in shapefile to use for mapping
+adm2_ind_shp <- readOGR("../Raw Data/Admin_Boundaries/gadm36_IND_2.shp")
+
+# Check which Regions do not match
+adm2_names <- adm2_ind_shp@data$NAME_2
+dhs_adm2_names <- unique(DHSREGNA)
+sort(adm2_names[!adm2_names %in% dhs_adm2_names])
+sort(dhs_adm2_names[!dhs_adm2_names %in% adm2_names])
+
+# Add vectors to df again
+geo_mpi_fb$DHSREGNA <- DHSREGNA 
+geo_mpi_fb$predicted_CM <- pred_child_mort
+geo_mpi_fb$predicted_nutrition <- pred_nutrition
+geo_mpi_fb$predicted_school_attendance <- pred_school_attendance
+geo_mpi_fb$predicted_education <- pred_education
+geo_mpi_fb$predicted_water <- pred_water
+geo_mpi_fb$predicted_sanitation <- pred_sani
+geo_mpi_fb$predicted_cooking_fuel <- pred_cooking_fuel
+geo_mpi_fb$predicted_electricity <- pred_electricity
+geo_mpi_fb$predicted_housing <- pred_housing
+geo_mpi_fb$predicted_assets <- pred_assets
+geo_mpi_fb$predicted_gbm_CM <- pred_log_gbm_cm
+geo_mpi_fb$predicted_gbm_nutrition <- pred_log_gbm_nutrition
+geo_mpi_fb$predicted_gbm_school_attendance <- pred_log_gbm_satt
+geo_mpi_fb$predicted_gbm_education <- pred_log_gbm_education
+geo_mpi_fb$predicted_gbm_water <- pred_log_gbm_water
+geo_mpi_fb$predicted_gbm_sanitation <- pred_log_gbm_sani
+geo_mpi_fb$predicted_gbm_cooking_fuel <- pred_log_gbm_cooking_fuel
+geo_mpi_fb$predicted_gbm_electricity <- pred_log_gbm_electricity
+geo_mpi_fb$predicted_gbm_housing <- pred_log_gbm_housing
+geo_mpi_fb$predicted_gbm_assets <- pred_log_gbm_assets
+geo_mpi_fb$diff_CM <- pred_child_mort - geo_mpi_fb$d_cm
+geo_mpi_fb$diff_nutrition <- pred_nutrition - geo_mpi_fb$d_nutr
+geo_mpi_fb$diff_school_attendance <- pred_school_attendance - geo_mpi_fb$d_satt
+geo_mpi_fb$diff_education <- pred_education - geo_mpi_fb$d_educ
+geo_mpi_fb$diff_water <- pred_water - geo_mpi_fb$d_wtr
+geo_mpi_fb$diff_sanitation <- pred_sani - geo_mpi_fb$d_sani
+geo_mpi_fb$diff_cooking_fuel <- pred_cooking_fuel - geo_mpi_fb$d_ckfl
+geo_mpi_fb$diff_electricity <- pred_electricity - geo_mpi_fb$d_elct
+geo_mpi_fb$diff_housing <- pred_housing - geo_mpi_fb$d_hsg
+geo_mpi_fb$diff_assets <- pred_assets - geo_mpi_fb$d_asst
+geo_mpi_fb$diff_gbm_CM <- pred_log_gbm_cm - geo_mpi_fb$d_cm
+geo_mpi_fb$diff_gbm_nutrition <- pred_log_gbm_nutrition - geo_mpi_fb$d_nutr
+geo_mpi_fb$diff_gbm_school_attendance <- pred_log_gbm_satt - geo_mpi_fb$d_satt
+geo_mpi_fb$diff_gbm_education <- pred_log_gbm_education - geo_mpi_fb$d_educ
+geo_mpi_fb$diff_gbm_water <- pred_log_gbm_water - geo_mpi_fb$d_wtr
+geo_mpi_fb$diff_gbm_sanitation <- pred_log_gbm_sani - geo_mpi_fb$d_sani
+geo_mpi_fb$diff_gbm_cooking_fuel <- pred_log_gbm_cooking_fuel - geo_mpi_fb$d_ckfl
+geo_mpi_fb$diff_gbm_electricity <- pred_log_gbm_electricity - geo_mpi_fb$d_elct
+geo_mpi_fb$diff_gbm_housing <- pred_log_gbm_housing - geo_mpi_fb$d_hsg
+geo_mpi_fb$diff_gbm_assets <- pred_log_gbm_assets - geo_mpi_fb$d_asst
+
+
+# Compute the relative difference 
+compute_relative_difference <- function(data = geo_mpi_fb, prediction, actual){
+  
+  data[data[,actual] == 0,actual] <- data[data[,actual] == 0,actual] + 0.01
+  relative_difference <- (data[,prediction] / data[,actual]) - 1
+  return(relative_difference)
+}
+
+# LM
+geo_mpi_fb$rel_diff_cm <- compute_relative_difference(prediction = "predicted_CM", actual = "d_cm")
+geo_mpi_fb$rel_diff_nutrition <- compute_relative_difference(prediction = "predicted_nutrition", actual = "d_nutr")
+geo_mpi_fb$rel_diff_satt <- compute_relative_difference(prediction = "predicted_school_attendance", actual = "d_satt")
+geo_mpi_fb$rel_diff_educ <- compute_relative_difference(prediction = "predicted_education", actual = "d_educ")
+geo_mpi_fb$rel_diff_elct <- compute_relative_difference(prediction = "predicted_electricity", actual = "d_elct")
+geo_mpi_fb$rel_diff_water <- compute_relative_difference(prediction = "predicted_water", actual = "d_wtr")
+geo_mpi_fb$rel_diff_sani <- compute_relative_difference(prediction = "predicted_sanitation", actual = "d_sani")
+geo_mpi_fb$rel_diff_cookingfuel <- compute_relative_difference(prediction = "predicted_cooking_fuel", actual = "d_ckfl")
+geo_mpi_fb$rel_diff_housing <- compute_relative_difference(prediction = "predicted_housing", actual = "d_hsg")
+geo_mpi_fb$rel_diff_assets <- compute_relative_difference(prediction = "predicted_assets", actual = "d_asst")
+
+# TR
+geo_mpi_fb$rel_diff_gbm_cm <- compute_relative_difference(prediction = "predicted_gbm_CM", actual = "d_cm")
+geo_mpi_fb$rel_diff_gbm_nutrition <- compute_relative_difference(prediction = "predicted_gbm_nutrition", actual = "d_nutr")
+geo_mpi_fb$rel_diff_gbm_satt <- compute_relative_difference(prediction = "predicted_gbm_school_attendance", actual = "d_satt")
+geo_mpi_fb$rel_diff_gbm_educ <- compute_relative_difference(prediction = "predicted_gbm_education", actual = "d_educ")
+geo_mpi_fb$rel_diff_gbm_elct <- compute_relative_difference(prediction = "predicted_gbm_electricity", actual = "d_elct")
+geo_mpi_fb$rel_diff_gbm_water <- compute_relative_difference(prediction = "predicted_gbm_water", actual = "d_wtr")
+geo_mpi_fb$rel_diff_gbm_sani <- compute_relative_difference(prediction = "predicted_gbm_sanitation", actual = "d_sani")
+geo_mpi_fb$rel_diff_gbm_cookingfuel <- compute_relative_difference(prediction = "predicted_gbm_cooking_fuel", actual = "d_ckfl")
+geo_mpi_fb$rel_diff_gbm_housing <- compute_relative_difference(prediction = "predicted_gbm_housing", actual = "d_hsg")
+geo_mpi_fb$rel_diff_gbm_assets <- compute_relative_difference(prediction = "predicted_gbm_assets", actual = "d_asst")
+
+# Test if all is in order
+geo_mpi_fb$predicted_gbm_CM[1:10]
+geo_mpi_fb$d_cm[1:10]
+geo_mpi_fb$rel_diff_gbm_cm[1:10]
+
+
+# Test if the prediction is even correlated with ground truth # ALL GOOD
+cor.test(geo_mpi_fb$predicted_CM, geo_mpi_fb$d_cm)[1]
+cor.test(geo_mpi_fb$predicted_nutrition, geo_mpi_fb$d_nutr)[1]
+cor.test(geo_mpi_fb$predicted_school_attendance, geo_mpi_fb$d_satt)[1]
+cor.test(geo_mpi_fb$predicted_education, geo_mpi_fb$d_educ)[1]
+cor.test(geo_mpi_fb$predicted_water, geo_mpi_fb$d_wtr)[1]
+cor.test(geo_mpi_fb$predicted_sanitation, geo_mpi_fb$d_sani)[1]
+cor.test(geo_mpi_fb$predicted_cooking_fuel, geo_mpi_fb$d_ckfl)[1]
+cor.test(geo_mpi_fb$predicted_electricity, geo_mpi_fb$d_elct)[1]
+cor.test(geo_mpi_fb$predicted_housing, geo_mpi_fb$d_hsg)[1]
+cor.test(geo_mpi_fb$predicted_assets, geo_mpi_fb$d_asst)[1]
+
+# LM: Test correlation between deprivation level and relative difference
+cor.test(geo_mpi_fb$rel_diff_cm, geo_mpi_fb$d_cm)
+cor.test(geo_mpi_fb$rel_diff_nutrition, geo_mpi_fb$d_nutr)
+cor.test(geo_mpi_fb$rel_diff_satt, geo_mpi_fb$d_satt)
+cor.test(geo_mpi_fb$rel_diff_educ, geo_mpi_fb$d_educ)
+cor.test(geo_mpi_fb$rel_diff_water, geo_mpi_fb$d_wtr)
+cor.test(geo_mpi_fb$rel_diff_sani, geo_mpi_fb$d_sani)
+cor.test(geo_mpi_fb$rel_diff_cookingfuel, geo_mpi_fb$d_ckfl)
+cor.test(geo_mpi_fb$rel_diff_elct, geo_mpi_fb$d_elct)
+cor.test(geo_mpi_fb$rel_diff_housing, geo_mpi_fb$d_hsg)
+cor.test(geo_mpi_fb$rel_diff_assets, geo_mpi_fb$d_asst)
+
+# TR: Test correlation between deprivation level and relative difference
+cor_test_all_cm <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_cm, geo_mpi_fb$d_cm)[c(1,3,4)])
+cor_test_all_nutr <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_nutrition, geo_mpi_fb$d_nutr)[c(1,3,4)])
+cor_test_all_satt <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_satt, geo_mpi_fb$d_satt)[c(1,3,4)])
+cor_test_all_educ <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_educ, geo_mpi_fb$d_educ)[c(1,3,4)])
+cor_test_all_wtr <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_water, geo_mpi_fb$d_wtr)[c(1,3,4)])
+cor_test_all_sani <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_sani, geo_mpi_fb$d_sani)[c(1,3,4)])
+cor_test_all_ckfl <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_cookingfuel, geo_mpi_fb$d_ckfl)[c(1,3,4)])
+cor_test_all_elct <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_elct, geo_mpi_fb$d_elct)[c(1,3,4)])
+cor_test_all_hsg <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_housing, geo_mpi_fb$d_hsg)[c(1,3,4)])
+cor_test_all_asst <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_assets, geo_mpi_fb$d_asst)[c(1,3,4)])
+
+cor_test_all_df <- data.frame(cor_test_all_cm, 
+           cor_test_all_nutr, 
+           cor_test_all_satt, 
+           cor_test_all_educ, 
+           cor_test_all_wtr,
+           cor_test_all_sani,
+           cor_test_all_ckfl,
+           cor_test_all_elct,
+           cor_test_all_hsg,
+           cor_test_all_asst)
+
+cor_test_all_df <- data.frame(t(cor_test_all_df))
+colnames(cor_test_all_df) <- c("t-statistic", "p-value", "correlation estimate")
+cor_test_all_df <- round(cor_test_all_df, 3)
+cor_test_all_df <- add_column(cor_test_all_df, Indicator = variables_full[4:13], .before=0)
+rownames(cor_test_all_df) <- NULL
+xtable::xtable(cor_test_all_df)
+
+
+# Clean
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Banaskantha", "Banas Kantha")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Bara Banki", "Barabanki")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Baramula", "Baramulla")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Baudh", "Bauda")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Chamarajanagar", "Chamrajnagar")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Chikkaballapura", "Chikballapura")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Dadra & Nagar Haveli", "Dadra and Nagar Haveli")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Dohad", "Dahod")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Gadchiroli", "Garhchiroli")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Janjgir - Champa", "Janjgir-Champa")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Kabirdham", "Kabeerdham")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Kaimur (Bhabua)", "Kaimur")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Mahrajganj", "Maharajganj")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Mumbai", "Mumbai City")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Nagapattinam", "Nagappattinam")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Nicobars", "Nicobar Islands")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "North Twenty Four Parganas", "North 24 Parganas")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "North & Middle Andaman", "North and Middle Andaman")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Panchmahal", "Panch Mahals")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Papumpare", "Papum Pare")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Paschim Medinipur", "Pashchim Medinipur")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Punch", "Poonch")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Rangareddy", "Ranga Reddy")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Ribhoi", "Ri Bhoi")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Sabarkantha", "Sabar Kantha")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Sant Ravidas Nagar (Bhadohi)", "Sant Ravi Das Nagar")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Saraikela Kharsawan", "Saraikela-kharsawan")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Senapati (Excluding 3 Sub-Divisions)", "Senapati")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Shrawasti", "Shravasti")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "South Twenty Four Parganas", "South 24 Parganas")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "North District", "North Sikkim")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "South District", "South Sikkim")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "East District", "East Sikkim")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "West District", "West Sikkim")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Korea (Koriya)", "Koriya")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Khandwa (East Nimar)", "East Nimar")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Khargone (West Nimar)", "West Nimar")
+geo_mpi_fb$DHSREGNA <- str_replace_all(geo_mpi_fb$DHSREGNA, "Virudhunagar", "Virudunagar")
+
+# Summarise data on Admin 2 Level
+data_temp <- geo_mpi_fb[,-c(1:5,22:184)] %>%
+  group_by(DHSREGNA) %>%
+  summarise_all(.funs = mean, na.rm = TRUE)
+
+# Join Spatial and Numerical File
+adm2_ind_shp_fortified <-  tidy(adm2_ind_shp, region = "NAME_2")
+adm2_ind_shp_fortified <- adm2_ind_shp_fortified %>%
+  left_join(. , data_temp, by=c("id"="DHSREGNA"))
+
+
+# Make plots
+colnames(adm2_ind_shp_fortified)
+
+##################################################################################################################### Child Mortality
+cm_true_plot <- plot_india_adm("d_cm", 
+                                 title = "Child Mortality Deprivation in India", 
+                                 subtitle = "Share of households where a child under 18 has died in the past 5 years",
+                                 legend_title = "Child Mortality Deprivation Rate",
+                                 upper = 1) # 0.1
+cm_predicted_plot <- plot_india_adm("predicted_gbm_CM", 
+                                      title = "Predicted Child Mortality Deprivation in India", 
+                                      subtitle = "Share of households where a child under 18 has died in the past 5 years",
+                                      legend_title = "Child Mortality Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### Nutrition
+nutrition_true_plot <- plot_india_adm("d_nutr", 
+                                 title = "Nutritional Deprivation in India", 
+                                 subtitle = "Share of households where any person under 70 years of age is undernourished",
+                                 legend_title = "Nutritional Deprivation Rate",
+                                 upper = 1) # 0.6
+nutrition_predicted_plot <- plot_india_adm("predicted_gbm_nutrition", 
+                                      title = "Predicted Nutritional Deprivation in India", 
+                                      subtitle = "Share of households where any person under 70 years of age is undernourished",
+                                      legend_title = "Nutritional Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### School Attendance
+satt_true_plot <- plot_india_adm("d_satt", 
+                                 title = "School Attendance Deprivation in India", 
+                                 subtitle = "Share of households where any school-aged child is not attending school \nuup to the age at which he/she would complete class 8",
+                                 legend_title = "School Attendance Deprivation Rate",
+                                 upper = 1) # 0.35
+satt_predicted_plot <- plot_india_adm("predicted_gbm_school_attendance", 
+                                      title = "Predicted School Attendance Deprivation in India", 
+                                      subtitle = "Share of households where any school-aged child is not attending school \nup to the age at which he/she would complete class 8",
+                                      legend_title = "School Attendance Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### Education
+educ_true_plot <- plot_india_adm("d_educ", 
+                                 title = "Educational Deprivation in India", 
+                                 subtitle = "Share of households where no eligible household member has completed six years of schooling",
+                                 legend_title = "Education Deprivation Rate",
+                                 upper = 1) # 0.5
+educ_predicted_plot <- plot_india_adm("predicted_gbm_education", 
+                                      title = "Predicted Educational Deprivation in India", 
+                                      subtitle = "Share of households where no eligible household member has completed six years of schooling",
+                                      legend_title = "Education Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### Electricity
+elct_true_plot <- plot_india_adm("d_elct", 
+                                 title = "Electricty Deprivation in India", 
+                                 subtitle = "Share of households without Electricity",
+                                 legend_title = "Electricity Deprivation Rate",
+                                 upper = 1) # 0.75
+elct_predicted_plot <- plot_india_adm("predicted_gbm_electricity", 
+                                      title = "Predicted Electricty Deprivation in India", 
+                                      subtitle = "Share of households without Electricity",
+                                      legend_title = "Electricity Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### Water
+water_true_plot <- plot_india_adm("d_wtr", 
+                                 title = "Water Deprivation in India", 
+                                 subtitle = "Share of households where the source of drinking water is not safe \nor safe drinking water is a 30-minute or longer walk from home, roundtrip",
+                                 legend_title = "Water Deprivation Rate",
+                                 upper = 1) # 0.71
+water_predicted_plot <- plot_india_adm("predicted_gbm_water", 
+                                      title = "Predicted Water Deprivation in India", 
+                                      subtitle = "Share of households where the source of drinking water is not safe \nor safe drinking water is a 30-minute or longer walk from home, roundtrip",
+                                      legend_title = "Water Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### Sanitation
+sani_true_plot <- plot_india_adm("d_sani", 
+                                 title = "Sanitation Deprivation in India", 
+                                 subtitle = "Share of households which have unimproved or no sanitation facility or it is improved but shared with other households",
+                                 legend_title = "Sanitation Deprivation Rate",
+                                 upper = 1) # 0.93
+sani_predicted_plot <- plot_india_adm("predicted_gbm_sanitation", 
+                                      title = "Predicted Sanitation Deprivation in India", 
+                                      subtitle = "Share of households  which have unimproved or no sanitation facility or it is improved but shared with other households",
+                                      legend_title = "Sanitation Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### Housing
+housing_true_plot <- plot_india_adm("d_hsg", 
+                                 title = "Housing Deprivation in India", 
+                                 subtitle = "Share of households which have inadequate housing materials in any of the three components: floor, roof, or walls",
+                                 legend_title = "Housing Deprivation Rate",
+                                 upper = 1) # 0.92
+housing_predicted_plot <- plot_india_adm("predicted_gbm_housing", 
+                                      title = "Predicted Housing Deprivation in India", 
+                                      subtitle = "Share of households which have inadequate housing materials in any of the three components: floor, roof, or walls",
+                                      legend_title = "Housing Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### Cooking Fuel
+cookingf_true_plot <- plot_india_adm("d_ckfl", 
+                                 title = "Cooking Fuel Deprivation in India", 
+                                 subtitle = "Share of households which cook using solid fuel, such as dung, agricultural crop, shrubs, wood, charcoal, or coal",
+                                 legend_title = "Cooking Fuel Deprivation Rate",
+                                 upper = 1) # 0.95
+cookingf_predicted_plot <- plot_india_adm("predicted_gbm_cooking_fuel", 
+                                      title = "Predicted Cooking Fuel Deprivation in India", 
+                                      subtitle = "Share of households which cook using solid fuel, such as dung, agricultural crop, shrubs, wood, charcoal, or coal",
+                                      legend_title = "Cooking Fuel Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### Assets
+assets_true_plot <- plot_india_adm("d_asst", 
+                                 title = "Asset Deprivation in India", 
+                                 subtitle = "Share of households which do not own more than one of these assets: \nradio, TV, telephone, computer, animal cart, bicycle, motorbike, or refrigerator, and do not own a car or truck",
+                                 legend_title = "Asset Deprivation Rate",
+                                 upper = 1) # 0.66
+assets_predicted_plot <- plot_india_adm("predicted_gbm_assets", 
+                                      title = "Predicted Asset Deprivation in India", 
+                                      subtitle = "Share of households which do not own more than one of these assets: \nradio, TV, telephone, computer, animal cart, bicycle, motorbike, or refrigerator, and do not own a car or truck",
+                                      legend_title = "Asset Deprivation Rate",
+                                      upper = 1)
+
+##################################################################################################################### Facebook Penetration Rate and Users
+FB_penetration_plot <- plot_india_adm("FB_Penetration_18p", 
+                                 title = "Facebook Penetration in India", 
+                                 subtitle = "Share of Population using Facebook",
+                                 legend_title = "Facebook Penetration Rate",
+                                 upper = 1)
+FB_users_plot <- plot_india_adm("FB_user_18p_All", 
+                                      title = "All Facebook Users in India", 
+                                      subtitle = "Number of People using Facebook on at least a monthly basis",
+                                      legend_title = "Facebook Users",
+                                      upper = 2731081)
+
+
+# Save plots
+ggsave("../Data Exports/Figures/cm_true.png", plot = cm_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/cm_predicted.png", plot = cm_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/nutrition_true.png", plot = nutrition_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/nutrition_predicted.png", plot = nutrition_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/satt_true.png", plot = satt_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/satt_predicted.png", plot = satt_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/educ_true.png", plot = educ_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/educ_predicted.png", plot = educ_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/elct_true.png", plot = elct_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/elct_predicted.png", plot = elct_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/water_true.png", plot = water_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/water_predicted.png", plot = water_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/sanitation_true.png", plot = sani_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/sanitation_predicted.png", plot = sani_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/housing_true.png", plot = housing_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/housing_predicted.png", plot = housing_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/cookingfuel_true.png", plot = cookingf_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/cookingfuel_predicted.png", plot = cookingf_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/assets_true.png", plot = assets_true_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/assets_predicted.png", plot = assets_predicted_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/FB_penetration.png", plot = FB_penetration_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/FB_users.png", plot = FB_users_plot, width = 10, height = 10)
+
+```
+
+## Map Mismatch Prediction & Ground Truth
+
+```{r}
+
+# Make plots
+#colnames(adm2_ind_shp_fortified)
+
+
+##################################################################################################################### Child Mortality
+cm_diff_plot <- plot_india_adm("diff_CM", 
+                               title = "Mismatch Prediction v Ground Truth of Child Mortality Deprivation in India", 
+                               subtitle = "Difference as a Share of Households",
+                               legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                               lower = summary(adm2_ind_shp_fortified$diff_CM[!is.na(adm2_ind_shp_fortified$diff_CM)])[1],
+                              upper = summary(adm2_ind_shp_fortified$diff_CM[!is.na(adm2_ind_shp_fortified$diff_CM)])[6])
+
+cm_rel_diff_plot <- plot_india_adm("rel_diff_cm", 
+                               title = "Relative Mismatch Prediction v Ground Truth of Child Mortality Deprivation in India", 
+                               subtitle = "",
+                               legend_title = "Relative Difference:\nPrediction / Ground Truth",
+                               lower = summary(adm2_ind_shp_fortified$rel_diff_cm[!is.na(adm2_ind_shp_fortified$rel_diff_cm)])[1],
+                              upper = summary(adm2_ind_shp_fortified$rel_diff_cm[!is.na(adm2_ind_shp_fortified$rel_diff_cm)])[6])
+
+##################################################################################################################### Nutrition
+nutrition_diff_plot <- plot_india_adm("diff_nutrition", 
+                                      title = "Mismatch Prediction v Ground Truth of Nutritional Deprivation in India", 
+                                      subtitle = "",
+                                      legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                                      lower = summary(adm2_ind_shp_fortified$diff_nutrition[!is.na(adm2_ind_shp_fortified$diff_nutrition)])[1],
+                                upper = summary(adm2_ind_shp_fortified$diff_nutrition[!is.na(adm2_ind_shp_fortified$diff_nutrition)])[6])
+
+nutrition_rel_diff_plot <- plot_india_adm("rel_diff_nutrition", 
+                                      title = "Relative Mismatch Prediction v Ground Truth of Nutritional Deprivation in India", 
+                                      subtitle = "",
+                                      legend_title = "Relative Difference:\nPrediction / Ground Truth",
+                                      lower = summary(adm2_ind_shp_fortified$rel_diff_nutrition[!is.na(adm2_ind_shp_fortified$rel_diff_nutrition)])[1],
+                                upper = summary(adm2_ind_shp_fortified$rel_diff_nutrition[!is.na(adm2_ind_shp_fortified$rel_diff_nutrition)])[6])
+
+##################################################################################################################### School Attendance
+satt_diff_plot <- plot_india_adm("diff_school_attendance", 
+                                 title = "Mismatch Prediction v Ground Truth of School Attendance Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$diff_school_attendance[!is.na(adm2_ind_shp_fortified$diff_school_attendance)])[1],
+                                upper = summary(adm2_ind_shp_fortified$diff_school_attendance[!is.na(adm2_ind_shp_fortified$diff_school_attendance)])[6])
+
+satt_rel_diff_plot <- plot_india_adm("rel_diff_satt", 
+                                 title = "Mismatch Prediction v Ground Truth of School Attendance Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Difference:\nPrediction / Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$rel_diff_satt[!is.na(adm2_ind_shp_fortified$rel_diff_satt)])[1],
+                                upper = summary(adm2_ind_shp_fortified$rel_diff_satt[!is.na(adm2_ind_shp_fortified$rel_diff_satt)])[6])
+
+##################################################################################################################### Education
+educ_diff_plot <- plot_india_adm("diff_education", 
+                                 title = "Mismatch Prediction v Ground Truth of Educational Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$diff_education[!is.na(adm2_ind_shp_fortified$diff_education)])[1],
+                                upper = summary(adm2_ind_shp_fortified$diff_education[!is.na(adm2_ind_shp_fortified$diff_education)])[6])
+
+educ_rel_diff_plot <- plot_india_adm("rel_diff_educ", 
+                                 title = "Relative Mismatch Prediction v Ground Truth of Educational Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Relative Difference:\nPrediction / Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$rel_diff_educ[!is.na(adm2_ind_shp_fortified$rel_diff_educ)])[1],
+                                upper = summary(adm2_ind_shp_fortified$rel_diff_educ[!is.na(adm2_ind_shp_fortified$rel_diff_educ)])[6])
+
+##################################################################################################################### Electricity
+elct_diff_plot <- plot_india_adm("diff_electricity", 
+                                 title = "Mismatch Prediction v Ground Truth of Electricty Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$diff_electricity[!is.na(adm2_ind_shp_fortified$diff_electricity)])[1],
+                                upper = summary(adm2_ind_shp_fortified$diff_electricity[!is.na(adm2_ind_shp_fortified$diff_electricity)])[6])
+
+elct_rel_diff_plot <- plot_india_adm("rel_diff_elct", 
+                                 title = "Relative Mismatch Prediction v Ground Truth of Electricty Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Relative Difference:\nPrediction / Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$rel_diff_elct[!is.na(adm2_ind_shp_fortified$rel_diff_elct)])[1],
+                                upper = summary(adm2_ind_shp_fortified$rel_diff_elct[!is.na(adm2_ind_shp_fortified$rel_diff_elct)])[6])
+
+##################################################################################################################### Water
+water_diff_plot <- plot_india_adm("diff_water", 
+                                 title = "Mismatch Prediction v Ground Truth of Water Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$diff_water[!is.na(adm2_ind_shp_fortified$diff_water)])[1],
+                                upper = summary(adm2_ind_shp_fortified$diff_water[!is.na(adm2_ind_shp_fortified$diff_water)])[6])
+
+water_rel_diff_plot <- plot_india_adm("rel_diff_water", 
+                                 title = "Relative Mismatch Prediction v Ground Truth of Water Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Relative Difference:\nPrediction / Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$rel_diff_water[!is.na(adm2_ind_shp_fortified$rel_diff_water)])[1],
+                                upper = summary(adm2_ind_shp_fortified$rel_diff_water[!is.na(adm2_ind_shp_fortified$rel_diff_water)])[6])
+
+##################################################################################################################### Sanitation
+sani_diff_plot <- plot_india_adm("diff_sanitation", 
+                                 title = "Mismatch Prediction v Ground Truth of Sanitation Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$diff_sanitation[!is.na(adm2_ind_shp_fortified$diff_sanitation)])[1],
+                                upper = summary(adm2_ind_shp_fortified$diff_sanitation[!is.na(adm2_ind_shp_fortified$diff_sanitation)])[6])
+
+sani_rel_diff_plot <- plot_india_adm("rel_diff_sani", 
+                                 title = "Relative Mismatch Prediction v Ground Truth of Sanitation Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Relative Difference:\nPrediction / Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$rel_diff_sani[!is.na(adm2_ind_shp_fortified$rel_diff_sani)])[1],
+                                upper = summary(adm2_ind_shp_fortified$rel_diff_sani[!is.na(adm2_ind_shp_fortified$rel_diff_sani)])[6])
+
+##################################################################################################################### Housing
+housing_diff_plot <- plot_india_adm("diff_housing", 
+                                 title = "Mismatch Prediction v Ground Truth of Housing Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$diff_housing[!is.na(adm2_ind_shp_fortified$diff_housing)])[1],
+                                upper = summary(adm2_ind_shp_fortified$diff_housing[!is.na(adm2_ind_shp_fortified$diff_housing)])[6])
+
+housing_rel_diff_plot <- plot_india_adm("rel_diff_housing", 
+                                 title = "Relative Mismatch Prediction v Ground Truth of Housing Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Relative Difference:\nPrediction / Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$rel_diff_housing[!is.na(adm2_ind_shp_fortified$rel_diff_housing)])[1],
+                                upper = summary(adm2_ind_shp_fortified$rel_diff_housing[!is.na(adm2_ind_shp_fortified$rel_diff_housing)])[6])
+
+##################################################################################################################### Cooking Fuel
+cookingf_diff_plot <- plot_india_adm("diff_cooking_fuel", 
+                                 title = "Mismatch Prediction v Ground Truth of Cooking Fuel Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$diff_cooking_fuel[!is.na(adm2_ind_shp_fortified$diff_cooking_fuel)])[1],
+                                upper = summary(adm2_ind_shp_fortified$diff_cooking_fuel[!is.na(adm2_ind_shp_fortified$diff_cooking_fuel)])[6])
+
+cookingf_rel_diff_plot <- plot_india_adm("rel_diff_cookingfuel", 
+                                 title = "Relative Mismatch Prediction v Ground Truth of Cooking Fuel Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Relative Difference:\nPrediction / Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$rel_diff_cookingfuel[!is.na(adm2_ind_shp_fortified$rel_diff_cookingfuel)])[1],
+                                upper = summary(adm2_ind_shp_fortified$rel_diff_cookingfuel[!is.na(adm2_ind_shp_fortified$rel_diff_cookingfuel)])[6])
+
+##################################################################################################################### Assets
+assets_diff_plot <- plot_india_adm("diff_assets", 
+                                 title = "Mismatch Prediction v Ground Truth of Asset Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$diff_assets[!is.na(adm2_ind_shp_fortified$diff_assets)])[1],
+                                upper = summary(adm2_ind_shp_fortified$diff_assets[!is.na(adm2_ind_shp_fortified$diff_assets)])[6])
+
+assets_rel_diff_plot <- plot_india_adm("rel_diff_assets", 
+                                 title = "Relative Mismatch Prediction v Ground Truth of Asset Deprivation in India", 
+                                 subtitle = "",
+                                 legend_title = "Relative Difference:\nPrediction / Ground Truth",
+                                 lower = summary(adm2_ind_shp_fortified$rel_diff_assets[!is.na(adm2_ind_shp_fortified$rel_diff_assets)])[1],
+                                upper = summary(adm2_ind_shp_fortified$rel_diff_assets[!is.na(adm2_ind_shp_fortified$rel_diff_assets)])[6])
+
+
+
+# Save plots
+ggsave("../Data Exports/Figures/cm_diff.png", plot = cm_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/nutrition_diff.png", plot = nutrition_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/satt_diff.png", plot = satt_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/educ_diff.png", plot = educ_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/elct_diff.png", plot = elct_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/water_diff.png", plot = water_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/sanitation_diff.png", plot = sani_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/housing_diff.png", plot = housing_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/cookingfuel_diff.png", plot = cookingf_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/assets_diff.png", plot = assets_diff_plot, width = 10, height = 10)
+
+ggsave("../Data Exports/Figures/cm_rel_diff.png", plot = cm_rel_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/nutrition_rel_diff.png", plot = nutrition_rel_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/satt_rel_diff.png", plot = satt_rel_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/educ_rel_diff.png", plot = educ_rel_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/elct_rel_diff.png", plot = elct_rel_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/water_rel_diff.png", plot = water_rel_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/sanitation_rel_diff.png", plot = sani_rel_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/housing_rel_diff.png", plot = housing_rel_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/cookingfuel_rel_diff.png", plot = cookingf_rel_diff_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/assets_rel_diff.png", plot = assets_rel_diff_plot, width = 10, height = 10)
+
+
+```
+
+## Religion & Caste Disaggregation
+
+```{r}
+# Read household recode data in
+dhs_rel_caste_ind_2016 <- readstata13::read.dta13("../Data Exports/DHS/Households_Recode_Religion_Cast Subset.dta")
+
+# How many castes are reported in non-hindu households
+sum(as.character(dhs_rel_caste_ind_2016$sh34) != "hindu" & as.character(dhs_rel_caste_ind_2016$sh36) != "none of the above" & !is.na(as.character(dhs_rel_caste_ind_2016$sh36)), na.rm = T)
+
+# Screen
+448411/sum(table(dhs_rel_caste_ind_2016$sh34))
+table(dhs_rel_caste_ind_2016$sh34)
+table(dhs_rel_caste_ind_2016$sh36)
+
+# Compute shares of religions and castes on cluster level
+dhs_religion_caste_cluster <- dhs_rel_caste_ind_2016 %>%
+  group_by(hv001) %>%
+  summarise(scheduled_caste_share = mean(sh36 == "scheduled caste", na.rm = T),
+            scheduled_tribe_share = mean(sh36 == "scheduled tribe", na.rm = T),
+            other_backward_class_share = mean(sh36 == "other backward class", na.rm = T),
+            unclassified_share = mean(sh36 == "none of above", na.rm = T),
+            hindu_share = mean(sh34 == "hindu", na.rm = T),
+            muslim_share = mean(sh34 == "muslim", na.rm = T),
+            christian_share = mean(sh34 == "christian", na.rm = T),
+            sikh_share = mean(sh34 == "sikh", na.rm = T))
+rm(dhs_rel_caste_ind_2016)
+
+
+# Combine datasets
+geo_mpi_fb_temp <- geo_mpi_fb
+# Match and Merge with Facebook Data
+idx <-  dhs_religion_caste_cluster$hv001  %in% geo_mpi_fb_temp$DHSCLUST
+dhs_religion_caste_cluster <- dhs_religion_caste_cluster[idx,] %>% arrange(hv001)
+geo_mpi_fb_temp <- geo_mpi_fb_temp %>% arrange(DHSCLUST)
+idx <-  geo_mpi_fb_temp$DHSCLUST %in% dhs_religion_caste_cluster$hv001
+geo_mpi_fb_temp <- geo_mpi_fb_temp[idx,] %>% arrange(DHSCLUST)
+geo_mpi_fb_temp <- geo_mpi_fb_temp[,c(1:19,302:311)]
+
+# Add castes and religion shares
+geo_mpi_fb_temp$scheduled_caste_share <- dhs_religion_caste_cluster$scheduled_caste_share
+geo_mpi_fb_temp$scheduled_tribe_share <- dhs_religion_caste_cluster$scheduled_tribe_share
+geo_mpi_fb_temp$other_backward_class_share <- dhs_religion_caste_cluster$other_backward_class_share
+geo_mpi_fb_temp$unclassified_share <- dhs_religion_caste_cluster$unclassified_share
+geo_mpi_fb_temp$hindu_share <- dhs_religion_caste_cluster$hindu_share
+geo_mpi_fb_temp$muslim_share <- dhs_religion_caste_cluster$muslim_share
+geo_mpi_fb_temp$christian_share <- dhs_religion_caste_cluster$christian_share
+geo_mpi_fb_temp$sikh_share <- dhs_religion_caste_cluster$sikh_share
+
+# Correlate share of castes and religions with relative mispredictions
+df_cor_rel_religion_castes <- data.frame()
+indicators <- c("Child Mortality", "Nutrition", "School Attendance", "Education", "Electricity", "Drinking Water", "Sanitation", "Housing", "Cooking Fuel", "Assets")
+count <- 1
+for(i in colnames(geo_mpi_fb_temp)[20:29]){
+  print(i)
+  
+  # Compute Correlation Coefficients
+  schedule_caste_cor <- cor.test(geo_mpi_fb_temp$scheduled_caste_share, geo_mpi_fb_temp[,i])[4]
+  schedule_tribe_cor <- cor.test(geo_mpi_fb_temp$scheduled_tribe_share, geo_mpi_fb_temp[,i])[4]
+  obc_cor <- cor.test(geo_mpi_fb_temp$other_backward_class_share, geo_mpi_fb_temp[,i])[4]
+  unclassified_cor <- cor.test(geo_mpi_fb_temp$unclassified_share, geo_mpi_fb_temp[,i])[4]
+  hindu_cor <- cor.test(geo_mpi_fb_temp$hindu_share, geo_mpi_fb_temp[,i])[4]
+  muslim_cor <- cor.test(geo_mpi_fb_temp$muslim_share, geo_mpi_fb_temp[,i])[4]
+  christian_cor <- cor.test(geo_mpi_fb_temp$christian_share, geo_mpi_fb_temp[,i])[4]
+  sikh_cor <- cor.test(geo_mpi_fb_temp$sikh_share, geo_mpi_fb_temp[,i])[4]
+  
+  # Compute t-statistics
+  schedule_caste_t <- cor.test(geo_mpi_fb_temp$scheduled_caste_share, geo_mpi_fb_temp[,i])[1]
+  schedule_tribe_t <- cor.test(geo_mpi_fb_temp$scheduled_tribe_share, geo_mpi_fb_temp[,i])[1]
+  obc_t <- cor.test(geo_mpi_fb_temp$other_backward_class_share, geo_mpi_fb_temp[,i])[1]
+  unclassified_t <- cor.test(geo_mpi_fb_temp$unclassified_share, geo_mpi_fb_temp[,i])[1]
+  hindu_t <- cor.test(geo_mpi_fb_temp$hindu_share, geo_mpi_fb_temp[,i])[1]
+  muslim_t <- cor.test(geo_mpi_fb_temp$muslim_share, geo_mpi_fb_temp[,i])[1]
+  christian_t <- cor.test(geo_mpi_fb_temp$christian_share, geo_mpi_fb_temp[,i])[1]
+  sikh_t <- cor.test(geo_mpi_fb_temp$sikh_share, geo_mpi_fb_temp[,i])[1]
+  
+  # Compute p-values
+  schedule_caste_p <- cor.test(geo_mpi_fb_temp$scheduled_caste_share, geo_mpi_fb_temp[,i])[3]
+  schedule_tribe_p <- cor.test(geo_mpi_fb_temp$scheduled_tribe_share, geo_mpi_fb_temp[,i])[3]
+  obc_p <- cor.test(geo_mpi_fb_temp$other_backward_class_share, geo_mpi_fb_temp[,i])[3]
+  unclassified_p <- cor.test(geo_mpi_fb_temp$unclassified_share, geo_mpi_fb_temp[,i])[3]
+  hindu_p <- cor.test(geo_mpi_fb_temp$hindu_share, geo_mpi_fb_temp[,i])[3]
+  muslim_p <- cor.test(geo_mpi_fb_temp$muslim_share, geo_mpi_fb_temp[,i])[3]
+  christian_p <- cor.test(geo_mpi_fb_temp$christian_share, geo_mpi_fb_temp[,i])[3]
+  sikh_p <- cor.test(geo_mpi_fb_temp$sikh_share, geo_mpi_fb_temp[,i])[3]
+  
+  # combine each into a row 
+  df.1 <- c(schedule_caste_cor, schedule_tribe_cor, obc_cor, unclassified_cor, hindu_cor, muslim_cor, christian_cor, sikh_cor)
+  df.2 <- c(schedule_caste_t, schedule_tribe_t, obc_t, unclassified_t, hindu_t, muslim_t, christian_t, sikh_t)
+  df.3 <- c(schedule_caste_p, schedule_tribe_p, obc_p, unclassified_p, hindu_p, muslim_p, christian_p, sikh_p)
+  df_temp <- data.frame(unlist(rep(indicators[count], 8)), unlist(df.1), unlist(df.2), unlist(df.3))
+  colnames(df_temp) <- c("Indicator", "Correlation_Coefficient", "t_statistic", "p_value")
+  df_temp[,2:4] <- round(df_temp[,2:4], 3)
+  df_cor_rel_religion_castes <- rbind(df_cor_rel_religion_castes, df_temp)
+  count <- count + 1
+  
+}
+religions_caste_full <- c("Schedule_Caste", "Schedule_Tribe", "OBC", "Unclassified", "Hindu", "Muslim", "Christian", "Sikh")
+df_cor_rel_religion_castes <- add_column(df_cor_rel_religion_castes, Religion_Caste = rep(religions_caste_full, 10), .before = 1)
+df_cor_rel_religion_castes %>% arrange(Religion_Caste)
+
+
+########################################################################
+
+sum(geo_mpi_fb_temp$population) # don't be alarmed, many clusters' radii (yes that is actually the plural) overlap, especially in densely populated urban areas.
+
+##### Compute how deprived each religion and caste is in each indicator
+indicators <- variables_full[4:13]
+df_deprivation_religion_caste <- data.frame(rep(0,8))
+for(i in 9:18){
+  deprived_schedule_caste <- round(sum(geo_mpi_fb_temp[,i] * geo_mpi_fb_temp$population * geo_mpi_fb_temp$scheduled_caste_share, na.rm = T)) / round(sum(geo_mpi_fb_temp$population * geo_mpi_fb_temp$scheduled_caste_share, na.rm = T))
+  deprived_schedule_tribe <- round(sum(geo_mpi_fb_temp[,i] * geo_mpi_fb_temp$population * geo_mpi_fb_temp$scheduled_tribe_share, na.rm = T)) / round(sum(geo_mpi_fb_temp$population * geo_mpi_fb_temp$scheduled_tribe_share, na.rm = T))
+  deprived_OBC <- round(sum(geo_mpi_fb_temp[,i] * geo_mpi_fb_temp$population * geo_mpi_fb_temp$other_backward_class_share, na.rm = T)) / round(sum(geo_mpi_fb_temp$population * geo_mpi_fb_temp$other_backward_class_share, na.rm = T))
+  deprived_unclassified <- round(sum(geo_mpi_fb_temp[,i] * geo_mpi_fb_temp$population * geo_mpi_fb_temp$unclassified_share, na.rm = T)) / round(sum(geo_mpi_fb_temp$population * geo_mpi_fb_temp$unclassified_share, na.rm = T))
+  deprived_hindu <- round(sum(geo_mpi_fb_temp[,i] * geo_mpi_fb_temp$population * geo_mpi_fb_temp$hindu_share, na.rm = T)) / round(sum(geo_mpi_fb_temp$population * geo_mpi_fb_temp$hindu_share, na.rm = T))
+  deprived_muslim <- round(sum(geo_mpi_fb_temp[,i] * geo_mpi_fb_temp$population * geo_mpi_fb_temp$muslim_share, na.rm = T)) / round(sum(geo_mpi_fb_temp$population * geo_mpi_fb_temp$muslim_share, na.rm = T))
+  deprived_christian <- round(sum(geo_mpi_fb_temp[,i] * geo_mpi_fb_temp$population * geo_mpi_fb_temp$christian_share, na.rm = T)) / round(sum(geo_mpi_fb_temp$population * geo_mpi_fb_temp$christian_share, na.rm = T))
+  deprived_sikh <- round(sum(geo_mpi_fb_temp[,i] * geo_mpi_fb_temp$population * geo_mpi_fb_temp$sikh_share, na.rm = T)) / round(sum(geo_mpi_fb_temp$population * geo_mpi_fb_temp$sikh_share, na.rm = T))
+  
+  df_deprivation_religion_caste[,indicators[i-8]] <- c(deprived_schedule_caste, deprived_schedule_tribe, deprived_OBC, deprived_unclassified, deprived_hindu, deprived_muslim, deprived_christian, deprived_sikh)
+}
+
+religion_caste <- c("Schedule_Caste", "Schedule_Tribe", "OBC", "Unclassified", "Hindu", "Muslim", "Christian", "Sikh")
+df_deprivation_religion_caste <- df_deprivation_religion_caste[,-1]
+df_deprivation_religion_caste$Religion_Caste <- factor(religion_caste, levels = rev(religion_caste))
+df_deprivation_religion_caste <- df_deprivation_religion_caste %>% pivot_longer(cols = `Child Mortality`:Assets, names_to = "Indicator", values_to = "Deprived")
+
+
+
+# PLOT DEPRIVED PEOPLE
+plot_deprivation_religion_caste_heatmap <- ggplot(df_deprivation_religion_caste, aes(x = Indicator, y = Religion_Caste, fill= Deprived)) + 
+  geom_tile(colour = "white") +
+  geom_text(aes(label=paste0(format(round(Deprived, 2), nsmall = 0), "%")), colour = "white") +
+  scale_fill_viridis(discrete=FALSE) + 
+  scale_x_discrete(position = "top") +
+  labs(title = "Deprivation Rates across Indicators, Religions and Castes") + 
+  xlab("") + ylab("") +
+  theme_minimal() + 
+  theme(
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    panel.grid = element_blank())
+
+plot_deprivation_religion_caste_heatmap
+ggsave("../Data Exports/Figures/Deprivation_religion_caste_heatmap.png", plot = plot_deprivation_religion_caste_heatmap, width = 10, height = 10)
+
+```
+
+## Spatial Disaggregation
+
+```{r}
+
+
+# Screen
+plot_fit(pred_log_gbm_cm, log_gbm_cooking_fuel_model, d_cm_data, "d_cm", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+plot_fit(pred_log_gbm_nutrition, log_gbm_nutrition_model, nutrition_data, "d_nutr", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+plot_fit(pred_log_gbm_satt, log_gbm_satt_model, satt_data, "d_satt", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+plot_fit(pred_log_gbm_education, log_gbm_education_model, education_data, "d_educ", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+plot_fit(pred_log_gbm_electricity, log_gbm_electricity_model, electricity_data, "d_elct", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+plot_fit(pred_log_gbm_water, log_gbm_water_model, water_data, "d_wtr", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+plot_fit(pred_log_gbm_sani, log_gbm_sani_model, sani_data, "d_sani", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+plot_fit(pred_log_gbm_housing, log_gbm_housing_model, housing_data, "d_hsg", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+plot_fit(pred_log_gbm_cooking_fuel, log_gbm_cooking_fuel_model, cooking_fuel_data, "d_ckfl", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+plot_fit(pred_log_gbm_assets, log_gbm_assets_model, assets_data, "d_asst", colour = geo_mpi_fb$URBAN_RURA, size = 0.1)
+
+  
+# Mispredictions in rural and urban settings
+urban_rural_numeric <- ifelse(geo_mpi_fb$URBAN_RURA == "R", 0, 1)
+cor_test_urban_rural_cm <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_cm, urban_rural_numeric)[c(1,3,4)])
+cor_test_urban_rural_nutr <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_nutrition, urban_rural_numeric)[c(1,3,4)])
+cor_test_urban_rural_satt <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_satt, urban_rural_numeric)[c(1,3,4)])
+cor_test_urban_rural_educ <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_educ, urban_rural_numeric)[c(1,3,4)])
+cor_test_urban_rural_wtr <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_water, urban_rural_numeric)[c(1,3,4)])
+cor_test_urban_rural_sani <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_sani, urban_rural_numeric)[c(1,3,4)])
+cor_test_urban_rural_ckfl <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_cookingfuel, urban_rural_numeric)[c(1,3,4)])
+cor_test_urban_rural_elct <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_elct, urban_rural_numeric)[c(1,3,4)])
+cor_test_urban_rural_hsg <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_housing, urban_rural_numeric)[c(1,3,4)])
+cor_test_urban_rural_asst <- unlist(cor.test(geo_mpi_fb$rel_diff_gbm_assets, urban_rural_numeric)[c(1,3,4)])
+
+
+cor_test_urban_rural <- data.frame(cor_test_urban_rural_cm, 
+           cor_test_urban_rural_nutr, 
+           cor_test_urban_rural_satt, 
+           cor_test_urban_rural_educ, 
+           cor_test_urban_rural_wtr,
+           cor_test_urban_rural_sani,
+           cor_test_urban_rural_ckfl,
+           cor_test_urban_rural_elct,
+           cor_test_urban_rural_hsg,
+           cor_test_urban_rural_asst)
+
+cor_test_urban_rural <- data.frame(t(cor_test_urban_rural))
+colnames(cor_test_urban_rural) <- c("t-statistic", "p-value", "correlation estimate")
+cor_test_urban_rural <- round(cor_test_urban_rural, 3)
+cor_test_urban_rural <- add_column(cor_test_urban_rural, Indicator = variables_full[4:13], .before=0)
+rownames(cor_test_urban_rural) <- NULL
+xtable::xtable(cor_test_urban_rural)
+
+
+disaggregation_rural_urban <- function(ground_truth, var){
+  # Overall
+  mrd_rural_overall <- mean(geo_mpi_fb[urban_rural_numeric == 0,var], na.rm = T)
+  mrd_urban_overall <- mean(geo_mpi_fb[urban_rural_numeric == 1,var], na.rm = T)
+  mrd_spatial_overall <- c(mrd_rural_overall, mrd_urban_overall)
+  
+  print(paste0("Rural MRD overall: ", mrd_rural_overall))
+  print(paste0("Urban MRD overall: ", mrd_urban_overall))
+  
+  # For each quantile
+  # Order df and urban rural vector and compute quantiles
+  order_rows <- order(geo_mpi_fb[,var_of_interest])
+  geo_mpi_fb <- geo_mpi_fb[order_rows,]
+  urban_rural_numeric <- urban_rural_numeric[order_rows]
+  quantiles_var <- quantile(geo_mpi_fb[,var_of_interest])
+  
+  mrd_rural_1st <- mean(geo_mpi_fb[geo_mpi_fb[,ground_truth] <= quantiles_var[2] & urban_rural_numeric == 0,var], na.rm = T)
+  mrd_rural_2nd <- mean(geo_mpi_fb[geo_mpi_fb[,ground_truth] > quantiles_var[2] & geo_mpi_fb[,ground_truth] <= quantiles_var[3] & urban_rural_numeric == 0,var], na.rm = T)
+  mrd_rural_3rd <- mean(geo_mpi_fb[geo_mpi_fb[,ground_truth] > quantiles_var[3] & geo_mpi_fb[,ground_truth] <= quantiles_var[4] & urban_rural_numeric == 0,var], na.rm = T)
+  mrd_rural_4th <- mean(geo_mpi_fb[geo_mpi_fb[,ground_truth] > quantiles_var[4] & geo_mpi_fb[,ground_truth] <= quantiles_var[5] & urban_rural_numeric == 0,var], na.rm = T)
+  
+  mrd_urban_1st <- mean(geo_mpi_fb[geo_mpi_fb[,ground_truth] <= quantiles_var[2] & urban_rural_numeric == 1,var], na.rm = T)
+  mrd_urban_2nd <- mean(geo_mpi_fb[geo_mpi_fb[,ground_truth] > quantiles_var[2] & geo_mpi_fb[,ground_truth] <= quantiles_var[3] & urban_rural_numeric == 1,var], na.rm = T)
+  mrd_urban_3rd <- mean(geo_mpi_fb[geo_mpi_fb[,ground_truth] > quantiles_var[3] & geo_mpi_fb[,ground_truth] <= quantiles_var[4] & urban_rural_numeric == 1,var], na.rm = T)
+  mrd_urban_4th <- mean(geo_mpi_fb[geo_mpi_fb[,ground_truth] > quantiles_var[4] & geo_mpi_fb[,ground_truth] <= quantiles_var[5] & urban_rural_numeric == 1,var], na.rm = T)
+  
+  print(paste("Rural MRD Quantiles:", mrd_rural_1st, mrd_rural_2nd, mrd_rural_3rd, mrd_rural_4th))
+  print(paste("Urban MRD Quantiles:", mrd_urban_1st, mrd_urban_2nd, mrd_urban_3rd, mrd_urban_4th))
+
+}
+
+# Mean deviation
+print("Absolute Difference")
+disaggregation_rural_urban("d_cm", "diff_gbm_CM")
+disaggregation_rural_urban("d_nutr", "diff_gbm_nutrition")
+disaggregation_rural_urban("d_satt", "diff_gbm_school_attendance")
+disaggregation_rural_urban("d_educ", "diff_gbm_education")
+disaggregation_rural_urban("d_wtr", "diff_gbm_water")
+disaggregation_rural_urban("d_sani", "diff_gbm_sanitation")
+disaggregation_rural_urban("d_ckfl", "diff_gbm_cooking_fuel")
+disaggregation_rural_urban("d_elct", "diff_gbm_electricity")
+disaggregation_rural_urban("d_hsg", "diff_gbm_housing")
+disaggregation_rural_urban("d_asst", "diff_gbm_assets")
+
+# Mean relative deviation
+print("Relative Difference")
+disaggregation_rural_urban("d_cm", "rel_diff_gbm_cm")
+disaggregation_rural_urban("d_nutr", "rel_diff_gbm_nutrition")
+disaggregation_rural_urban("d_satt", "rel_diff_gbm_satt")
+disaggregation_rural_urban("d_educ", "rel_diff_gbm_educ")
+disaggregation_rural_urban("d_wtr", "rel_diff_gbm_water")
+disaggregation_rural_urban("d_sani", "rel_diff_gbm_sani")
+disaggregation_rural_urban("d_ckfl", "rel_diff_gbm_cookingfuel")
+disaggregation_rural_urban("d_elct", "rel_diff_gbm_elct")
+disaggregation_rural_urban("d_hsg", "rel_diff_gbm_housing")
+disaggregation_rural_urban("d_asst", "rel_diff_gbm_assets")
+
+
+
+
+
+```
+
+
+## Map Mismatch Wealth
+
+```{r}
+
+##### Plot Share of Households neglected in at least one dimension
+# Add Regions
+match_idx <- match(mpi_ind_hh_id_wealth$DHSCLUST, dhs_geo_df$DHSCLUST)
+mpi_ind_hh_id_wealth$DHSREGNA <- dhs_geo_df$DHSREGNA[match_idx]
+mpi_ind_hh_id_wealth$ADM1NAME <- dhs_geo_df$ADM1NAME[match_idx]
+# Compute if household was neglected in at least on indicator
+indicator_mtrx <- mpi_ind_hh_id_wealth[,27:36]  == "Neglected"
+mpi_ind_hh_id_wealth$neglected_atleastone_indicator <- apply(indicator_mtrx, FUN = any,  MARGIN = 1)
+mpi_ind_hh_id_wealth$neglected_count_indicators <- apply(indicator_mtrx, FUN = sum,  MARGIN = 1)
+mpi_ind_hh_id_wealth$neglected_atleasttwo_indicators <- ifelse(mpi_ind_hh_id_wealth$neglected_count_indicators >= 2, T,F)
+
+# Clean the data to map it 
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Banaskantha", "Banas Kantha")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Bara Banki", "Barabanki")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Baramula", "Baramulla")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Baudh", "Bauda")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Chamarajanagar", "Chamrajnagar")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Chikkaballapura", "Chikballapura")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Dadra & Nagar Haveli", "Dadra and Nagar Haveli")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Dohad", "Dahod")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Gadchiroli", "Garhchiroli")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Janjgir - Champa", "Janjgir-Champa")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Kabirdham", "Kabeerdham")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Kaimur (Bhabua)", "Kaimur")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Mahrajganj", "Maharajganj")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Mumbai", "Mumbai City")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Nagapattinam", "Nagappattinam")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Nicobars", "Nicobar Islands")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "North Twenty Four Parganas", "North 24 Parganas")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "North & Middle Andaman", "North and Middle Andaman")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Panchmahal", "Panch Mahals")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Papumpare", "Papum Pare")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Paschim Medinipur", "Pashchim Medinipur")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Punch", "Poonch")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Rangareddy", "Ranga Reddy")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Ribhoi", "Ri Bhoi")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Sabarkantha", "Sabar Kantha")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Sant Ravidas Nagar (Bhadohi)", "Sant Ravi Das Nagar")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Saraikela Kharsawan", "Saraikela-kharsawan")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Senapati (Excluding 3 Sub-Divisions)", "Senapati")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Shrawasti", "Shravasti")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "South Twenty Four Parganas", "South 24 Parganas")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "North District", "North Sikkim")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "South District", "South Sikkim")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "East District", "East Sikkim")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "West District", "West Sikkim")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Korea (Koriya)", "Koriya")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Khandwa (East Nimar)", "East Nimar")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Khargone (West Nimar)", "West Nimar")
+mpi_ind_hh_id_wealth$DHSREGNA <- str_replace_all(mpi_ind_hh_id_wealth$DHSREGNA, "Virudhunagar", "Virudunagar")
+
+# Summarise data on Admin 2 Level
+data_temp <- mpi_ind_hh_id_wealth[,c(38,40:42)] %>%
+  group_by(DHSREGNA) %>%
+  summarise_all(.funs = mean, na.rm = TRUE)
+
+# Join Spatial and Numerical File
+adm2_ind_shp_fortified <-  tidy(adm2_ind_shp, region = "NAME_2")
+adm2_ind_shp_fortified <- adm2_ind_shp_fortified %>%
+  left_join(. , data_temp, by=c("id"="DHSREGNA"))
+
+summary(data_temp$neglected_count_indicators)
+
+# Plot and save
+neglection_atleastone_rate_plot <- plot_india_adm("neglected_atleastone_indicator", 
+                                      title = "Neglected by Monetary Poverty", 
+                                      subtitle = "Mean rate of Households deprived but neglected of at least one Indicator in India",
+                                      legend_title = "Rate of Neglect ≥1 Indicator",
+                                      upper = 0.9)
+neglection_atleasttwo_rate_plot <- plot_india_adm("neglected_atleasttwo_indicators", 
+                                      title = "Neglected by Monetary Poverty", 
+                                      subtitle = "Mean rate of Households deprived but neglected of at least two Indicators in India",
+                                      legend_title = "Rate of Neglect ≥2 Indicator",
+                                      upper = 0.75)
+neglections_plot <- plot_india_adm("neglected_count_indicators", 
+                                      title = "Neglected by Monetary Poverty", 
+                                      subtitle = "Mean count of indicators that households are deprived but neglected of in India",
+                                      legend_title = "Mean Rate of Neglected Indicators",
+                                      upper = 2.3)
+neglection_atleastone_rate_plot
+ggsave("../Data Exports/Figures/neglection_atleastone_rate_plot.png", plot = neglection_atleastone_rate_plot, width = 10, height = 10)
+neglection_atleasttwo_rate_plot
+ggsave("../Data Exports/Figures/neglection_atleasttwo_rate_plot.png", plot = neglection_rate_plot, width = 10, height = 10)
+neglections_plot
+ggsave("../Data Exports/Figures/neglections_count_plot.png", plot = neglections_plot, width = 10, height = 10)
+
+
+##################### Check if the regions where most neglect is present, poverty decline is slowest
+
+# Child Mortality
+hdx_cm_dhs <- read.csv("../Raw Data/HDX/select-child-mortality-indicators_subnational_ind.csv")
+hdx_cm_dhs <- hdx_cm_dhs %>% filter(Indicator == "Under-five mortality rate"  & SurveyYear != "2006" & SurveyYear != "1999")
+hdx_cm_dhs$Value <- as.numeric(hdx_cm_dhs$Value)
+change_cm <- hdx_cm_dhs[,c(2,4,5,9)] %>%
+  group_by(Location) %>%
+  summarise(Indicator = unique(Indicator),
+            cm_sd_1993_2015 = sd(Value, na.rm = T),
+            cm_change_1993_2015 = diff(Value, na.rm = T)) %>%
+  arrange(Location)
+
+# Compute share of non_educated (only data on women historically)
+hdx_education_dhs <- read.csv("../Raw Data/HDX/select-education-indicators_subnational_ind.csv")
+hdx_education_dhs <- hdx_education_dhs %>% filter(Indicator == "Women with no education" & SurveyYear != "2006" & SurveyYear != "1999")
+hdx_education_dhs$Value <- as.numeric(hdx_education_dhs$Value)
+change_education <- hdx_education_dhs[,c(2,4,5,9)] %>%
+  group_by(Location) %>%
+  summarise(Indicator = unique(Indicator),
+            education_sd_1993_2015 = sd(Value, na.rm = T),
+            education_change_1993_2015 = diff(Value, na.rm = T)) %>%
+  arrange(Location)
+
+# Malnutrition Indicator (only including children being wasted)
+hdx_nutrition_dhs <- read.csv("../Raw Data/HDX/select-nutrition-indicators_subnational_ind.csv")
+hdx_nutrition_dhs <- hdx_nutrition_dhs %>% filter(Indicator == "Children wasted"  & SurveyYear != "2006")
+hdx_nutrition_dhs$Value <- as.numeric(hdx_nutrition_dhs$Value)
+change_nutrition <- hdx_nutrition_dhs[,c(2,4,5,9)] %>%
+  group_by(Location) %>%
+  summarise(Indicator = unique(Indicator),
+            nutrition_sd_1999_2015 = sd(Value, na.rm = T),
+            nutrition_change_1999_2015 = diff(Value, na.rm = T)) %>%
+  filter(Location != "Sikkim" & Location != "Jammu & Kashmir") %>%
+  arrange(Location)
+
+# Sanitation
+hdx_sani_dhs <- read.csv("../Raw Data/HDX/toilet-facilities_subnational_ind.csv")
+hdx_sani_dhs <- hdx_sani_dhs %>% filter(Indicator == "Households with an unimproved toilet facility" & SurveyYear != "2006" & SurveyYear != "1999")
+hdx_sani_dhs$Value <- as.numeric(hdx_sani_dhs$Value)
+change_sani <- hdx_sani_dhs[,c(2,4,5,9)] %>%
+  group_by(Location) %>%
+  summarise(Indicator = unique(Indicator),
+            sani_sd_1993_2015 = sd(Value, na.rm = T),
+            sani_change_1993_2015 = diff(Value, na.rm = T)) %>%
+  arrange(Location)
+
+# Water
+hdx_water_dhs <- read.csv("../Raw Data/HDX/water_subnational_ind.csv")
+hdx_water_dhs <- hdx_water_dhs %>% filter(Indicator == "Households using an unimproved water source" & SurveyYear != "1999")
+hdx_water_dhs$Value <- as.numeric(hdx_water_dhs$Value)
+change_wtr <- hdx_water_dhs[,c(2,4,5,9)] %>%
+  group_by(Location) %>%
+  summarise(Indicator = unique(Indicator),
+            water_sd_1993_2006 = sd(Value, na.rm = T),
+            water_change_1993_2006 = diff(Value, na.rm = T)) %>%
+  arrange(Location)
+
+# Merge all
+change_dhs_old_all <- cbind(change_cm[,-2], change_nutrition[,3:4], change_education[,3:4], change_sani[,3:4], change_wtr[,3:4])
+
+
+################ Plot each
+
+# Match Shapefile with Locations
+# Read in shapefile to use for mapping
+adm1_ind_shp <- readOGR("../Raw Data/Admin_Boundaries/gadm36_IND_1.shp")
+# Fix duplicate Locations in old DHS file
+# Duplicate rows where the regions is aggregated in DHS (in Excel)
+write.csv(change_dhs_old_all, "../Data Exports/DHS/change_dhs_old_all.csv")
+change_dhs_old_all_locationfix <- read.csv("../Data Exports/DHS/change_dhs_old_all_locationduplicatefix.csv")
+
+# Check which Locations do not match
+adm1_names <- adm1_ind_shp@data$NAME_1
+dhs_old_adm1_names <- change_dhs_old_all_locationfix$Location
+# Those of shapefile not in dhs
+sort(adm1_names[!adm1_names %in% dhs_old_adm1_names])
+sort(dhs_old_adm1_names[!dhs_old_adm1_names %in% adm1_names])
+
+# Clean
+change_dhs_old_all_locationfix$Location <- str_replace_all(change_dhs_old_all_locationfix$Location, "New Delhi", "NCT of Delhi")
+
+# Join Spatial and Numerical File
+adm1_ind_shp_fortified <-  tidy(adm1_ind_shp, region = "NAME_1")
+adm1_ind_shp_fortified <- adm1_ind_shp_fortified %>%
+  left_join(. , change_dhs_old_all_locationfix, by=c("id"="Location"))
+
+# Make plots
+colnames(adm1_ind_shp_fortified)
+summary(adm1_ind_shp_fortified$cm_sd_1993_2015)
+
+
+# Plot
+##################################################################################################################### Child Mortality
+history_cm_plot <- plot_india_adm("cm_change_1993_2015", 
+                                 title = "Change of Child Mortality in India since 1993", 
+                                 subtitle = "Change of Rate of Children under five dying from 1993 to 2015",
+                                 legend_title = "Change in Child Mortality",
+                                 lower = -86,
+                                 upper = 26,
+                                 data = adm1_ind_shp_fortified)
+
+history_cm_sd_plot <- plot_india_adm("cm_sd_1993_2015", 
+                                 title = "Volatility of Child Mortality in India between 1993 and 2015", 
+                                 subtitle = "Standard Devitation of Rate of Children Under Five Dying",
+                                 legend_title = "Standard Deviation in Child Mortality",
+                                 lower = 14,
+                                 upper = 61,
+                                 data = adm1_ind_shp_fortified)
+
+##################################################################################################################### Nutrition
+history_nutrition_plot <- plot_india_adm("nutrition_change_1999_2015", 
+                                 title = "Change of Malnutrition in India in the 21st century", 
+                                 subtitle = "Change of Rate of Wasted Childrenfrom 1999 to 2015",
+                                 legend_title = "Change in Child Malnutrition",
+                                 lower = -10,
+                                 upper = 14,
+                                 data = adm1_ind_shp_fortified)
+
+history_nutrition_sd_plot <- plot_india_adm("nutrition_sd_1999_2015", 
+                                 title = "Volatility of Malnutrition in India in the 21st century", 
+                                 subtitle = "Standard Devitation of Rate of Wasted Children between 1999 and 2015",
+                                 legend_title = "Standard Deviation in Child Malnutrition",
+                                 lower = 0,
+                                 upper = 10,
+                                 data = adm1_ind_shp_fortified)
+
+
+##################################################################################################################### Education
+history_educ_plot <- plot_india_adm("education_change_1993_2015", 
+                                 title = "Change of Female Education Rates in India from 1993 to 2015", 
+                                 subtitle = "",
+                                 legend_title = "Change of Rate of Women without any Education",
+                                 lower = -42,
+                                 upper = -3,
+                                 data = adm1_ind_shp_fortified)
+
+history_educ_sd_plot <- plot_india_adm("education_sd_1993_2015", 
+                                 title = "Volatility of Child Mortality in India", 
+                                 subtitle = "Standard Devitation of Rate of Children Under five dying between 1993 and 2015",
+                                 legend_title = "Standard Deviation in Child Mortality",
+                                 lower = 2,
+                                 upper = 30,
+                                 data = adm1_ind_shp_fortified)
+
+##################################################################################################################### Sanitation
+history_sani_plot <- plot_india_adm("sani_change_1993_2015", 
+                                 title = "Change of Sanitary Access in India from 1993 to 2015", 
+                                 subtitle = "Change of Rate of Households with Unimproved Sanitary Facilities",
+                                 legend_title = "Change Sanitation",
+                                 lower = -99,
+                                 upper = -31,
+                                 data = adm1_ind_shp_fortified)
+
+history_sani_sd_plot <- plot_india_adm("sani_sd_1993_2015", 
+                                 title = "Volatility of Sanitary Access in India from 1993 to 2015", 
+                                 subtitle = "Standard Devitation of Rate of Households with Unimproved Sanitary Facilities",
+                                 legend_title = "Standard Deviation Sanitation",
+                                 lower = 21,
+                                 upper = 70,
+                                 data = adm1_ind_shp_fortified)
+
+##################################################################################################################### Water
+history_water_plot <- plot_india_adm("water_change_1993_2006", 
+                                 title = "Change of Clean Water Access in India from 1993 to 2006", 
+                                 subtitle = "Change of Rate Households using an Unimproved Water Source",
+                                 legend_title = "Change in Clean Water Access",
+                                 lower = -20,
+                                 upper = 23,
+                                 data = adm1_ind_shp_fortified)
+
+history_water_sd_plot <- plot_india_adm("water_sd_1993_2006", 
+                                 title = "Volatility of Clean Water Access in India from 1993 to 2006", 
+                                 subtitle = "Standard Devitation of Rate Households using an Unimproved Water Source",
+                                 legend_title = "Standard Deviation in Clean Water Access",
+                                 lower = 0,
+                                 upper = 17,
+                                 data = adm1_ind_shp_fortified)
+
+
+# Save plots 
+ggsave("../Data Exports/Figures/History_CM.png", plot = history_cm_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/History_CM_sd.png", plot = history_cm_sd_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/History_nutrition.png", plot = history_nutrition_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/History_nutrition_sd.png", plot = history_nutrition_sd_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/History_educ.png", plot = history_educ_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/History_educ_sd.png", plot = history_educ_sd_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/History_sani.png", plot = history_sani_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/History_sani_sd.png", plot = history_sani_sd_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/History_water.png", plot = history_water_plot, width = 10, height = 10)
+ggsave("../Data Exports/Figures/History_water_sd.png", plot = history_water_sd_plot, width = 10, height = 10)
+
+
+# Plot one composite rate of decline with all indicators normalised and averaged
+temp <- data.frame(base::scale(adm1_ind_shp_fortified[,c(9,11,13,15,17)]))
+temp_mean_change_rate_all_indicators <- apply(temp, FUN = mean, MARGIN = 1)
+adm1_ind_shp_fortified_normalised_all_mean <- cbind(adm1_ind_shp_fortified[,1:7], temp_mean_change_rate_all_indicators)
+
+composite_change_plot <- plot_india_adm("temp_mean_change_rate_all_indicators", 
+                                 title = "Mean decline of Multiple Deprivations in India since 1993", 
+                                 subtitle = "Deprivations include Child Mortality, Malnutrition, Lack of Female Education, \nUnimproved Sanitation Access, Unimproved Water Access",
+                                 legend_title = "Mean normalised rate of change",
+                                 lower = -1,
+                                 upper = 2,
+                                 data = adm1_ind_shp_fortified_normalised_all_mean)
+
+ggsave("../Data Exports/Figures/History_composite_change.png", plot = composite_change_plot, width = 10, height = 10)
+
+
+
+##### Check correlation of neglect with deprivation decline over time on Adm1
+
+# Summarise data on Admin 1 Level
+data_temp <- mpi_ind_hh_id_wealth[,c(39:42)] %>%
+  group_by(ADM1NAME) %>%
+  summarise_all(.funs = mean, na.rm = TRUE)
+
+old_dhs_temp <- adm1_ind_shp_fortified_normalised_all_mean[,7:8] %>%
+  group_by(id) %>%
+  summarise_all(.funs = mean, na.rm = TRUE)
+
+old_dhs_temp.2 <- adm1_ind_shp_fortified[,c(7,9,11,13,15,17)] %>%
+  group_by(id) %>%
+  summarise_all(.funs = mean, na.rm = TRUE)
+  
+# Correlate
+cor.test(x = data_temp$neglected_count_indicators, y = old_dhs_temp$temp_mean_change_rate_all_indicators, use = "everything", method = "pearson")
+cor.test(x = data_temp$neglected_count_indicators, y = old_dhs_temp.2$cm_change_1993_2015, use = "everything", method = "pearson")
+cor.test(x = data_temp$neglected_count_indicators, y = old_dhs_temp.2$nutrition_change_1999_2015, use = "everything", method = "pearson")
+cor.test(x = data_temp$neglected_count_indicators, y = old_dhs_temp.2$education_change_1993_2015, use = "everything", method = "pearson")
+cor.test(x = data_temp$neglected_count_indicators, y = old_dhs_temp.2$sani_change_1993_2015, use = "everything", method = "pearson")
+cor.test(x = data_temp$neglected_count_indicators, y = old_dhs_temp.2$water_change_1993_2006, use = "everything", method = "pearson")
+# Finding: Higher Neglection Rates correlate with positive changes of educational achievement of women at p=0.04496 ---> WHY?!
+
+
+```
+
+## Neural Network
+
+```{r}
+load("../Data Exports/Code/mpi_fb_geo.RData")
+
+############ Train NN for each dataset
+# Child Mortality
+NN_cm <- train_NN(d_cm_data)
+plot_fit(NN_cm[[1]][,1], NN_cm[[2]], NN_cm[[3]], "y", size = 0.1)
+NN_cm[[4]]
+
+# Nutrition
+NN_nutrition <- train_NN(nutrition_data)
+plot_fit(NN_nutrition[[1]][,1], NN_nutrition[[2]], NN_nutrition[[3]], "y", size = 0.1)
+NN_nutrition[[4]]
+
+# School Attendance
+NN_satt <- train_NN(satt_data)
+plot_fit(NN_satt[[1]][,1], NN_satt[[2]], NN_satt[[3]], "y", size = 0.1)
+NN_satt[[4]]
+
+# Educational achievement
+NN_education <- train_NN(education_data)
+plot_fit(NN_education[[1]][,1], NN_education[[2]], NN_education[[3]], "y", size = 0.1)
+NN_education[[4]]
+
+# Electricity
+NN_electricity <- train_NN(electricity_data)
+plot_fit(NN_electricity[[1]][,1], NN_electricity[[2]], NN_electricity[[3]], "y", size = 0.1)
+NN_electricity[[4]]
+
+# Drinking Water
+NN_water <- train_NN(water_data)
+plot_fit(NN_water[[1]][,1], NN_water[[2]], NN_water[[3]], "y", size = 0.1)
+NN_water[[4]]
+
+# Sanitary Facilities
+NN_sani <- train_NN(sani_data)
+plot_fit(NN_sani[[1]][,1], NN_sani[[2]], NN_sani[[3]], "y", size = 0.1)
+NN_sani[[4]]
+
+# Housing Materials
+NN_housing <- train_NN(housing_data)
+plot_fit(NN_housing[[1]][,1], NN_housing[[2]], NN_housing[[3]], "y", size = 0.1)
+NN_housing[[4]]
+
+# cooking Fuel
+NN_cooking_fuel <- train_NN(cooking_fuel_data)
+plot_fit(NN_cooking_fuel[[1]][,1], NN_cooking_fuel[[2]], NN_cooking_fuel[[3]], "y", size = 0.1)
+NN_cooking_fuel[[4]]
+
+# Assets
+NN_assets <- train_NN(assets_data)
+plot_fit(NN_assets[[1]][,1], NN_assets[[2]], NN_assets[[3]], "y", size = 0.1)
+NN_assets[[4]]
+
+```
