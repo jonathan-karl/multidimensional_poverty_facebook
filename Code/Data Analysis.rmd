@@ -1279,29 +1279,45 @@ colnames(housing_data)[1] <- "d_hsg"
 colnames(cooking_fuel_data)[1] <- "d_ckfl"
 colnames(assets_data)[1] <- "d_asst"
 
+
+nrow(housing_data)/4
 # Plot the quantiles of each indicator
 # Bar plot, in different shades for each (viridis maybe), x from 0-1, and then you show the quantiles
-quantiles_cm <- quantile(d_cm_data[,1])[-1]
-quantiles_nutrition <- quantile(nutrition_data[,1])[-1]
-quantiles_satt <- quantile(satt_data[,1])[-1]
-quantiles_educ <- quantile(education_data[,1])[-1]
-quantiles_elct <- quantile(electricity_data[,1])[-1]
-quantiles_water <- quantile(water_data[,1])[-1]
-quantiles_sani <- quantile(sani_data[,1])[-1]
-quantiles_housing <- quantile(housing_data[,1])[-1]
-quantiles_cooking <- quantile(cooking_fuel_data[,1])[-1]
-quantiles_assets <- quantile(assets_data[,1])[-1]
+summary(d_cm_data[,1])
+summary(nutrition_data[,1])
+summary(satt_data[,1])
+summary(education_data[,1])
+summary(electricity_data[,1])
+summary(water_data[,1])
+summary(sani_data[,1])
+summary(housing_data[,1])
+summary(cooking_fuel_data[,1])
+summary(assets_data[,1])
+
+quantiles_cm <- c(quantile(d_cm_data[,1])[-1],mean(d_cm_data[,1]))
+quantiles_nutrition <- c(quantile(nutrition_data[,1])[-1],mean(nutrition_data[,1]))
+quantiles_satt <- c(quantile(satt_data[,1])[-1],mean(satt_data[,1]))
+quantiles_educ <- c(quantile(education_data[,1])[-1],mean(education_data[,1]))
+quantiles_elct <- c(quantile(electricity_data[,1])[-1],mean(electricity_data[,1]))
+quantiles_water <- c(quantile(water_data[,1])[-1],mean(water_data[,1]))
+quantiles_sani <- c(quantile(sani_data[,1])[-1],mean(sani_data[,1]))
+quantiles_housing <- c(quantile(housing_data[,1])[-1],mean(housing_data[,1]))
+quantiles_cooking <- c(quantile(cooking_fuel_data[,1])[-1],mean(cooking_fuel_data[,1]))
+quantiles_assets <- c(quantile(assets_data[,1])[-1],mean(assets_data[,1]))
 
 quantiles_df <- data.frame(quantiles_cm, quantiles_nutrition, quantiles_satt, quantiles_educ, quantiles_elct, quantiles_water, quantiles_sani, quantiles_housing, quantiles_cooking, quantiles_assets)
 
 quantiles_df_comp <- data.frame(Indicator = variables_full[4:13])
-quantiles_df_comp$`25%` <- unlist(quantiles_df[1,])
-quantiles_df_comp$`50%` <- unlist(quantiles_df[2,])
-quantiles_df_comp$`75%` <- unlist(quantiles_df[3,])
-quantiles_df_comp$`100%` <- unlist(quantiles_df[4,])
+quantiles_df_comp$`Q1` <- unlist(quantiles_df[1,])
+quantiles_df_comp$`Q2 (Median)` <- unlist(quantiles_df[2,])
+quantiles_df_comp$Mean <- unlist(quantiles_df[5,])
+quantiles_df_comp$`Q3` <- unlist(quantiles_df[3,])
+quantiles_df_comp$`Q4 (Max)` <- unlist(quantiles_df[4,])
 quantiles_df_comp$Indicator <- factor(quantiles_df_comp$Indicator, levels=rev(variables_full))
+quantiles_df_comp[,-1] <- round(quantiles_df_comp[,-1], 3)
+xtable::xtable(quantiles_df_comp)
 
-ggplot(data = quantiles_df_comp) +
+quantiles_plot <- ggplot(data = quantiles_df_comp) +
   geom_bar(aes(x = `100%`, y = Indicator, fill = "100%"), position="stack", stat="identity") +
   geom_bar(aes(x = `75%`, y = Indicator , fill = "75%"), position="stack", stat="identity") + 
   geom_bar(aes(x = `50%`, y = Indicator , fill = "50%"), position="stack", stat="identity") + 
@@ -1309,11 +1325,13 @@ ggplot(data = quantiles_df_comp) +
   scale_fill_manual(name="Quantile", breaks = c("100%", "75%", "50%", "25%"), values = c("25%" =  "#BCE6FF", "50%" = "#88CDF6", "75%" = "#2D82B5", "100%" = "#015C92"), labels = c("Q4", "Q3", "Q2", "Q1")) +
   scale_x_continuous(breaks = c(seq(0,1,0.1)), labels = c("0%", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%")) + 
   xlab("Share of Households in Cluster Deprived") + ylab("") +
-  ggtitle("Distributions of Deprivation Rates of all Multidimensional Poverty Indicators") +
+  labs(title = "Summary Statistics Visualised: Ranges of Deprivation Rates of all MPI Indicators",
+       subtitle = "Each quantile contains 6691 clusters. Each section of each bar represents\nthe range of deprivation rates faced by households in each quantile.") +
   theme_minimal() +
   theme(panel.grid = element_blank(),
         axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0, unit = "pt")),
         axis.text.y = element_text(margin = margin(t = 0, r = -10, b = 0, l = 0, unit = "pt")))
+ggsave("../Data Exports/Figures/Quantile_Deprivation_Distribution.png", plot = quantiles_plot, width = 8, height = 6)
 
 ########################### Linear Regression
 # Child Mortality
@@ -1522,13 +1540,15 @@ plot_MRD_heatmap <- ggplot(MRD_df_long, aes(quantile, Variable, fill= value)) +
   geom_tile(colour = "white") +
   geom_text(aes(label=round(value,2)), colour = "white") +
   scale_fill_viridis(discrete=FALSE) + 
-  labs(title = "Mean Average Deviation of Each Model in Different Deprivation Quantiles") + 
+  labs(title = "Mean Relative Deviation of Each Model in Different Deprivation Quantiles") + 
   xlab("Quantiles (low to high)") + ylab("") +
   theme_minimal() + 
   theme(
     legend.position = "none",
     axis.ticks = element_blank(),
-    panel.grid = element_blank())
+    panel.grid = element_blank(),
+    plot.title = element_text(size = 22),
+    axis.title.x = element_text(size = 18))
 
 ggsave("../Data Exports/Figures/MRD_heatmap.png", plot = plot_MRD_heatmap, width = 10, height = 10)
 
@@ -1537,7 +1557,7 @@ plot_MRD_marginal_no_heatmap <- ggplot(MRD_marginalno_df_long, aes(class, Variab
   geom_tile(colour = "white") +
   geom_text(aes(label=round(value,2)), colour = "white") +
   scale_fill_viridis(discrete=FALSE) + 
-  labs(title = "Mean Average Deviation of Each Model for Non-Deprived & \nMarginally Deprived (10% and less) clusters") + 
+  labs(title = "Mean Relative Deviation of Each Model for Non-Deprived & \nMarginally Deprived (10% and less) clusters") + 
   xlab("") + ylab("") +
   theme_minimal() + 
   theme(
@@ -1750,13 +1770,15 @@ plot_MRD_heatmap_gbm <- ggplot(MRD_gbm_df_long, aes(quantile, Variable, fill= va
   geom_tile(colour = "white") +
   geom_text(aes(label=round(value,2)), colour = "white") +
   scale_fill_viridis(discrete=FALSE) + 
-  labs(title = "Mean Average Deviation of Each Model in Different Deprivation Quantiles") + 
+  labs(title = "") + 
   xlab("Quantiles (low to high)") + ylab("") +
   theme_minimal() + 
   theme(
     legend.position = "none",
     axis.ticks = element_blank(),
-    panel.grid = element_blank())
+    panel.grid = element_blank(),
+    axis.title.x = element_text(size = 18),
+    axis.text = element_text(size = 14))
 
 ggsave("../Data Exports/Figures/MRD_heatmap_gbm.png", plot = plot_MRD_heatmap_gbm, width = 10, height = 10)
 
@@ -1765,7 +1787,7 @@ plot_MRD_marginal_no_heatmap_gbm <- ggplot(MRD_marginalno_gbm_df_long, aes(class
   geom_tile(colour = "white") +
   geom_text(aes(label=round(value,2)), colour = "white") +
   scale_fill_viridis(discrete=FALSE) + 
-  labs(title = "Mean Average Deviation of Each Model for Non-Deprived & \nMarginally Deprived (10% and less) clusters") + 
+  labs(title = "Mean Relative Deviation of Each Model for Non-Deprived & \nMarginally Deprived (10% and less) clusters") + 
   xlab("") + ylab("") +
   theme_minimal() + 
   theme(
@@ -1978,7 +2000,8 @@ plot_demographic_disaggregation <- function(pred.1 = pred_1,
                                             size = 0.25, 
                                             title = "Age | Cooking Fuel",
                                             xtitle = "Cooking Fuel Deprivation Rate Old 55p",
-                                            ytitle = "Cooking Fuel Deprivation Rate Young 18-34"){
+                                            ytitle = "Cooking Fuel Deprivation Rate Young 13-34",
+                                            saving = "Old 55p - Young 13-34"){
   
   # Set up plot
   plot <- ggplot() +
@@ -1990,12 +2013,13 @@ plot_demographic_disaggregation <- function(pred.1 = pred_1,
     guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
     theme_minimal()
   
-  print(plot)
-  ggsave(paste0("../Data Exports/Figures/Disaggregation ", title,".png"), width = 8, height = 8)
+  ggsave(paste0("../Data Exports/Figures/Disaggregation ", title,"(",saving,").png"), width = 8, height = 8)
 }
 
 
 disaggregate_demographic <- function(data_1, data_2, indicator, demos, demographic_group.1, demographic_group.2, plotcolour = "darkgreen"){
+  
+  saving_var <- paste0(demographic_group.1, "-", demographic_group.2)
   
   # Check each
   if("cm" %in% indicator){
@@ -2007,7 +2031,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- Child Mortality"),
                                     xtitle = paste("Child Mortality Deprivation Rates", demographic_group.1),
                                     ytitle = paste("Child Mortality Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
   
   if("nutr" %in% indicator){
@@ -2019,7 +2044,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- Nutrition"),
                                     xtitle = paste("Nutrition Deprivation Rates", demographic_group.1),
                                     ytitle = paste("Nutrition Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
   
   if("satt" %in% indicator){
@@ -2031,7 +2057,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- School Attendance"),
                                     xtitle = paste("School Attendance Deprivation Rates", demographic_group.1),
                                     ytitle = paste("School Attendance Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
     
   if("educ" %in% indicator){
@@ -2043,7 +2070,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- Education"),
                                     xtitle = paste("Education Deprivation Rates", demographic_group.1),
                                     ytitle = paste("Education Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
   
   if("elct" %in% indicator){
@@ -2055,7 +2083,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- Electricity"),
                                     xtitle = paste("Electricity Deprivation Rates", demographic_group.1),
                                     ytitle = paste("Electricity Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
     
   if("wtr" %in% indicator){
@@ -2067,7 +2096,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- Drinking Water"),
                                     xtitle = paste("Drinking Water Deprivation Rates", demographic_group.1),
                                     ytitle = paste("Drinking Water Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
     
   if("sani" %in% indicator){
@@ -2079,7 +2109,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- Sanitation"),
                                     xtitle = paste("Sanitation Deprivation Rates", demographic_group.1),
                                     ytitle = paste("Sanitation Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
   
   if("hsg" %in% indicator){
@@ -2091,7 +2122,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- Housing"),
                                     xtitle = paste("Housing Deprivation Rates", demographic_group.1),
                                     ytitle = paste("Housing Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
     
   if("ckfl" %in% indicator){
@@ -2103,7 +2135,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- Cooking Fuel"),
                                     xtitle = paste("Cooking Fuel Deprivation Rates", demographic_group.1),
                                     ytitle = paste("Cooking Fuel Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
 
   if("asst" %in% indicator){
@@ -2115,7 +2148,8 @@ disaggregate_demographic <- function(data_1, data_2, indicator, demos, demograph
                                     title = paste(demos,"- Assets"),
                                     xtitle = paste("Assets Deprivation Rates", demographic_group.1),
                                     ytitle = paste("Assets Deprivation Rates", demographic_group.2),
-                                    colour = plotcolour)
+                                    colour = plotcolour,
+                                    saving = saving_var)
   }
   
 }
@@ -2855,8 +2889,9 @@ for(i in colnames(geo_mpi_fb_temp)[20:29]){
 }
 religions_caste_full <- c("Schedule_Caste", "Schedule_Tribe", "OBC", "Unclassified", "Hindu", "Muslim", "Christian", "Sikh")
 df_cor_rel_religion_castes <- add_column(df_cor_rel_religion_castes, Religion_Caste = rep(religions_caste_full, 10), .before = 1)
-df_cor_rel_religion_castes %>% arrange(Religion_Caste)
+df_cor_rel_religion_castes <- df_cor_rel_religion_castes %>% arrange(Religion_Caste)
 
+xtable::xtable(df_cor_rel_religion_castes)
 
 ########################################################################
 
@@ -2878,28 +2913,30 @@ for(i in 9:18){
   df_deprivation_religion_caste[,indicators[i-8]] <- c(deprived_schedule_caste, deprived_schedule_tribe, deprived_OBC, deprived_unclassified, deprived_hindu, deprived_muslim, deprived_christian, deprived_sikh)
 }
 
-religion_caste <- c("Schedule_Caste", "Schedule_Tribe", "OBC", "Unclassified", "Hindu", "Muslim", "Christian", "Sikh")
+religion_caste <- c("Schedule Caste", "Schedule Tribe", "OBC", "Unclassified Caste", "Hindu", "Muslim", "Christian", "Sikh")
 df_deprivation_religion_caste <- df_deprivation_religion_caste[,-1]
-df_deprivation_religion_caste$Religion_Caste <- factor(religion_caste, levels = rev(religion_caste))
+df_deprivation_religion_caste$Religion_Caste <- factor(religion_caste, levels = religion_caste)
 df_deprivation_religion_caste <- df_deprivation_religion_caste %>% pivot_longer(cols = `Child Mortality`:Assets, names_to = "Indicator", values_to = "Deprived")
+df_deprivation_religion_caste$Indicator <- factor(df_deprivation_religion_caste$Indicator, levels = rev(unique(df_deprivation_religion_caste$Indicator)))
 
 
 
 # PLOT DEPRIVED PEOPLE
-plot_deprivation_religion_caste_heatmap <- ggplot(df_deprivation_religion_caste, aes(x = Indicator, y = Religion_Caste, fill= Deprived)) + 
+plot_deprivation_religion_caste_heatmap <- ggplot(df_deprivation_religion_caste, aes(x = Religion_Caste, y = Indicator, fill= Deprived)) + 
   geom_tile(colour = "white") +
   geom_text(aes(label=paste0(format(round(Deprived, 2), nsmall = 0), "%")), colour = "white") +
   scale_fill_viridis(discrete=FALSE) + 
-  scale_x_discrete(position = "top") +
-  labs(title = "Deprivation Rates across Indicators, Religions and Castes") + 
+  scale_x_discrete(position = "top", guide = guide_axis(n.dodge=2)) +
+  labs(title = "") + 
   xlab("") + ylab("") +
   theme_minimal() + 
   theme(
     legend.position = "none",
     axis.ticks = element_blank(),
-    panel.grid = element_blank())
+    panel.grid = element_blank(),
+    axis.title.x = element_text(size = 18),
+    axis.text = element_text(size = 14))
 
-plot_deprivation_religion_caste_heatmap
 ggsave("../Data Exports/Figures/Deprivation_religion_caste_heatmap.png", plot = plot_deprivation_religion_caste_heatmap, width = 10, height = 10)
 
 ```
@@ -3019,7 +3056,7 @@ disaggregation_rural_urban("d_asst", "rel_diff_gbm_assets")
 ```
 
 
-## Map Mismatch Wealth
+## Map Mismatch Wealth (Exploratory)
 
 ```{r}
 
@@ -3347,7 +3384,7 @@ cor.test(x = data_temp$neglected_count_indicators, y = old_dhs_temp.2$water_chan
 
 ```
 
-## Neural Network
+## Neural Network (this was a test)
 
 ```{r}
 load("../Data Exports/Code/mpi_fb_geo.RData")
