@@ -170,9 +170,11 @@ plot_india_adm <- function(var_of_interest, title, subtitle, legend_title, lower
           axis.text = element_blank(),
           axis.ticks = element_blank(),
           axis.line = element_blank(),
-          plot.title = element_text(size= 16, hjust=0.01, color = "#4e4d47", margin = margin(b = -0.1, t = 0.4, l = 2, unit = "cm")),
-          plot.subtitle = element_text(size= 12, hjust=0.01, color = "#4e4d47", margin = margin(b = -0.1, t = 0.43, l = 2, unit = "cm")),
-          legend.position = c(0.7, 0.09)) +
+          plot.title = element_text(size= 24, hjust=0.01, color = "#4e4d47", margin = margin(b = -0.1, t = 0.4, l = 2, unit = "cm")),
+          plot.subtitle = element_text(size= 18, hjust=0.01, color = "#4e4d47", margin = margin(b = -0.1, t = 0.43, l = 2, unit = "cm")),
+          legend.position = c(0.7, 0.09),
+          legend.title = element_text(size = 16),
+          legend.text = element_text(size = 12)) +
     coord_map()
   
   return(plot)
@@ -1077,7 +1079,7 @@ log_gbm_pointplot_cv_rsqurared <- ggplot(data = log_gbm_rsquared_df_long, aes(x=
   geom_point(aes(colour = r_squared), size = 6) +
   geom_text(data = log_gbm_r2_mean_df, aes(x = max_r2, y=Indicator, label = paste("~", format(round(mean_r2,2), nsmall = 0))), vjust = 0.5, hjust = -0.3, size = 6) + 
   scale_color_viridis(discrete = FALSE, alpha=0.6) +
-  xlim(0, 0.54) +
+  scale_x_continuous(breaks = c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5), limits = c(0.0, 0.54)) + 
   theme_minimal() +
   theme(legend.position="none",
         plot.title = element_text(size=22), 
@@ -2485,12 +2487,12 @@ satt_predicted_plot <- plot_india_adm("predicted_gbm_school_attendance",
 ##################################################################################################################### Education
 educ_true_plot <- plot_india_adm("d_educ", 
                                  title = "Educational Deprivation in India", 
-                                 subtitle = "Share of households where no eligible household member has completed six years of schooling",
+                                 subtitle = "Share of households where no eligible household member \nhas completed six years of schooling",
                                  legend_title = "Education Deprivation Rate",
                                  upper = 1) # 0.5
 educ_predicted_plot <- plot_india_adm("predicted_gbm_education", 
                                       title = "Predicted Educational Deprivation in India", 
-                                      subtitle = "Share of households where no eligible household member has completed six years of schooling",
+                                      subtitle = "Share of households where no eligible household member \nhas completed six years of schooling",
                                       legend_title = "Education Deprivation Rate",
                                       upper = 1)
 
@@ -2521,48 +2523,48 @@ water_predicted_plot <- plot_india_adm("predicted_gbm_water",
 ##################################################################################################################### Sanitation
 sani_true_plot <- plot_india_adm("d_sani", 
                                  title = "Sanitation Deprivation in India", 
-                                 subtitle = "Share of households which have unimproved or no sanitation facility or it is improved but shared with other households",
+                                 subtitle = "Share of households which have unimproved or no sanitation facility \nor it is improved but shared with other households",
                                  legend_title = "Sanitation Deprivation Rate",
                                  upper = 1) # 0.93
 sani_predicted_plot <- plot_india_adm("predicted_gbm_sanitation", 
                                       title = "Predicted Sanitation Deprivation in India", 
-                                      subtitle = "Share of households  which have unimproved or no sanitation facility or it is improved but shared with other households",
+                                      subtitle = "Share of households  which have unimproved or no sanitation facility \nor it is improved but shared with other households",
                                       legend_title = "Sanitation Deprivation Rate",
                                       upper = 1)
 
 ##################################################################################################################### Housing
 housing_true_plot <- plot_india_adm("d_hsg", 
                                  title = "Housing Deprivation in India", 
-                                 subtitle = "Share of households which have inadequate housing materials in any of the three components: floor, roof, or walls",
+                                 subtitle = "Share of households which have inadequate housing materials \nin any of the three components: floor, roof, or walls",
                                  legend_title = "Housing Deprivation Rate",
                                  upper = 1) # 0.92
 housing_predicted_plot <- plot_india_adm("predicted_gbm_housing", 
                                       title = "Predicted Housing Deprivation in India", 
-                                      subtitle = "Share of households which have inadequate housing materials in any of the three components: floor, roof, or walls",
+                                      subtitle = "Share of households which have inadequate housing materials \nin any of the three components: floor, roof, or walls",
                                       legend_title = "Housing Deprivation Rate",
                                       upper = 1)
 
 ##################################################################################################################### Cooking Fuel
 cookingf_true_plot <- plot_india_adm("d_ckfl", 
                                  title = "Cooking Fuel Deprivation in India", 
-                                 subtitle = "Share of households which cook using solid fuel, such as dung, agricultural crop, shrubs, wood, charcoal, or coal",
+                                 subtitle = "Share of households which cook using solid fuel, such as dung, \nagricultural crop, shrubs, wood, charcoal, or coal",
                                  legend_title = "Cooking Fuel Deprivation Rate",
                                  upper = 1) # 0.95
 cookingf_predicted_plot <- plot_india_adm("predicted_gbm_cooking_fuel", 
                                       title = "Predicted Cooking Fuel Deprivation in India", 
-                                      subtitle = "Share of households which cook using solid fuel, such as dung, agricultural crop, shrubs, wood, charcoal, or coal",
+                                      subtitle = "Share of households which cook using solid fuel, such as dung, \nagricultural crop, shrubs, wood, charcoal, or coal",
                                       legend_title = "Cooking Fuel Deprivation Rate",
                                       upper = 1)
 
 ##################################################################################################################### Assets
 assets_true_plot <- plot_india_adm("d_asst", 
                                  title = "Asset Deprivation in India", 
-                                 subtitle = "Share of households which do not own more than one of these assets: \nradio, TV, telephone, computer, animal cart, bicycle, motorbike, or refrigerator, and do not own a car or truck",
+                                 subtitle = "Share of households which do not own more than one of these assets: \nradio, TV, telephone, computer, animal cart, bicycle, motorbike, \nor refrigerator, and do not own a car or truck",
                                  legend_title = "Asset Deprivation Rate",
                                  upper = 1) # 0.66
 assets_predicted_plot <- plot_india_adm("predicted_gbm_assets", 
                                       title = "Predicted Asset Deprivation in India", 
-                                      subtitle = "Share of households which do not own more than one of these assets: \nradio, TV, telephone, computer, animal cart, bicycle, motorbike, or refrigerator, and do not own a car or truck",
+                                      subtitle = "Share of households which do not own more than one of these assets: \nradio, TV, telephone, computer, animal cart, bicycle, motorbike, \nor refrigerator, and do not own a car or truck",
                                       legend_title = "Asset Deprivation Rate",
                                       upper = 1)
 
@@ -2615,14 +2617,14 @@ ggsave("../Data Exports/Figures/FB_users.png", plot = FB_users_plot, width = 10,
 
 ##################################################################################################################### Child Mortality
 cm_diff_plot <- plot_india_adm("diff_CM", 
-                               title = "Mismatch Prediction v Ground Truth of Child Mortality Deprivation in India", 
+                               title = "Mismatch Prediction v Ground Truth \nof Child Mortality Deprivation in India", 
                                subtitle = "Difference as a Share of Households",
                                legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                lower = summary(adm2_ind_shp_fortified$diff_CM[!is.na(adm2_ind_shp_fortified$diff_CM)])[1],
                               upper = summary(adm2_ind_shp_fortified$diff_CM[!is.na(adm2_ind_shp_fortified$diff_CM)])[6])
 
 cm_rel_diff_plot <- plot_india_adm("rel_diff_cm", 
-                               title = "Relative Mismatch Prediction v Ground Truth of Child Mortality Deprivation in India", 
+                               title = "Relative Mismatch Prediction v Ground Truth \nof Child Mortality Deprivation in India", 
                                subtitle = "",
                                legend_title = "Relative Difference:\nPrediction / Ground Truth",
                                lower = summary(adm2_ind_shp_fortified$rel_diff_cm[!is.na(adm2_ind_shp_fortified$rel_diff_cm)])[1],
@@ -2630,14 +2632,14 @@ cm_rel_diff_plot <- plot_india_adm("rel_diff_cm",
 
 ##################################################################################################################### Nutrition
 nutrition_diff_plot <- plot_india_adm("diff_nutrition", 
-                                      title = "Mismatch Prediction v Ground Truth of Nutritional Deprivation in India", 
+                                      title = "Mismatch Prediction v Ground Truth \nof Nutritional Deprivation in India", 
                                       subtitle = "",
                                       legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                       lower = summary(adm2_ind_shp_fortified$diff_nutrition[!is.na(adm2_ind_shp_fortified$diff_nutrition)])[1],
                                 upper = summary(adm2_ind_shp_fortified$diff_nutrition[!is.na(adm2_ind_shp_fortified$diff_nutrition)])[6])
 
 nutrition_rel_diff_plot <- plot_india_adm("rel_diff_nutrition", 
-                                      title = "Relative Mismatch Prediction v Ground Truth of Nutritional Deprivation in India", 
+                                      title = "Relative Mismatch Prediction v Ground Truth \nof Nutritional Deprivation in India", 
                                       subtitle = "",
                                       legend_title = "Relative Difference:\nPrediction / Ground Truth",
                                       lower = summary(adm2_ind_shp_fortified$rel_diff_nutrition[!is.na(adm2_ind_shp_fortified$rel_diff_nutrition)])[1],
@@ -2645,14 +2647,14 @@ nutrition_rel_diff_plot <- plot_india_adm("rel_diff_nutrition",
 
 ##################################################################################################################### School Attendance
 satt_diff_plot <- plot_india_adm("diff_school_attendance", 
-                                 title = "Mismatch Prediction v Ground Truth of School Attendance Deprivation in India", 
+                                 title = "Mismatch Prediction v Ground Truth \nof School Attendance Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$diff_school_attendance[!is.na(adm2_ind_shp_fortified$diff_school_attendance)])[1],
                                 upper = summary(adm2_ind_shp_fortified$diff_school_attendance[!is.na(adm2_ind_shp_fortified$diff_school_attendance)])[6])
 
 satt_rel_diff_plot <- plot_india_adm("rel_diff_satt", 
-                                 title = "Mismatch Prediction v Ground Truth of School Attendance Deprivation in India", 
+                                 title = "Mismatch Prediction v Ground Truth \nof School Attendance Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Difference:\nPrediction / Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$rel_diff_satt[!is.na(adm2_ind_shp_fortified$rel_diff_satt)])[1],
@@ -2660,14 +2662,14 @@ satt_rel_diff_plot <- plot_india_adm("rel_diff_satt",
 
 ##################################################################################################################### Education
 educ_diff_plot <- plot_india_adm("diff_education", 
-                                 title = "Mismatch Prediction v Ground Truth of Educational Deprivation in India", 
+                                 title = "Mismatch Prediction v Ground Truth \nof Educational Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$diff_education[!is.na(adm2_ind_shp_fortified$diff_education)])[1],
                                 upper = summary(adm2_ind_shp_fortified$diff_education[!is.na(adm2_ind_shp_fortified$diff_education)])[6])
 
 educ_rel_diff_plot <- plot_india_adm("rel_diff_educ", 
-                                 title = "Relative Mismatch Prediction v Ground Truth of Educational Deprivation in India", 
+                                 title = "Relative Mismatch Prediction v Ground Truth \nof Educational Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Relative Difference:\nPrediction / Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$rel_diff_educ[!is.na(adm2_ind_shp_fortified$rel_diff_educ)])[1],
@@ -2675,14 +2677,14 @@ educ_rel_diff_plot <- plot_india_adm("rel_diff_educ",
 
 ##################################################################################################################### Electricity
 elct_diff_plot <- plot_india_adm("diff_electricity", 
-                                 title = "Mismatch Prediction v Ground Truth of Electricty Deprivation in India", 
+                                 title = "Mismatch Prediction v Ground Truth \nof Electricty Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$diff_electricity[!is.na(adm2_ind_shp_fortified$diff_electricity)])[1],
                                 upper = summary(adm2_ind_shp_fortified$diff_electricity[!is.na(adm2_ind_shp_fortified$diff_electricity)])[6])
 
 elct_rel_diff_plot <- plot_india_adm("rel_diff_elct", 
-                                 title = "Relative Mismatch Prediction v Ground Truth of Electricty Deprivation in India", 
+                                 title = "Relative Mismatch Prediction v Ground Truth \nof Electricty Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Relative Difference:\nPrediction / Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$rel_diff_elct[!is.na(adm2_ind_shp_fortified$rel_diff_elct)])[1],
@@ -2690,14 +2692,14 @@ elct_rel_diff_plot <- plot_india_adm("rel_diff_elct",
 
 ##################################################################################################################### Water
 water_diff_plot <- plot_india_adm("diff_water", 
-                                 title = "Mismatch Prediction v Ground Truth of Water Deprivation in India", 
+                                 title = "Mismatch Prediction v Ground Truth \nof Water Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$diff_water[!is.na(adm2_ind_shp_fortified$diff_water)])[1],
                                 upper = summary(adm2_ind_shp_fortified$diff_water[!is.na(adm2_ind_shp_fortified$diff_water)])[6])
 
 water_rel_diff_plot <- plot_india_adm("rel_diff_water", 
-                                 title = "Relative Mismatch Prediction v Ground Truth of Water Deprivation in India", 
+                                 title = "Relative Mismatch Prediction v Ground Truth \nof Water Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Relative Difference:\nPrediction / Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$rel_diff_water[!is.na(adm2_ind_shp_fortified$rel_diff_water)])[1],
@@ -2705,14 +2707,14 @@ water_rel_diff_plot <- plot_india_adm("rel_diff_water",
 
 ##################################################################################################################### Sanitation
 sani_diff_plot <- plot_india_adm("diff_sanitation", 
-                                 title = "Mismatch Prediction v Ground Truth of Sanitation Deprivation in India", 
+                                 title = "Mismatch Prediction v Ground Truth \nof Sanitation Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$diff_sanitation[!is.na(adm2_ind_shp_fortified$diff_sanitation)])[1],
                                 upper = summary(adm2_ind_shp_fortified$diff_sanitation[!is.na(adm2_ind_shp_fortified$diff_sanitation)])[6])
 
 sani_rel_diff_plot <- plot_india_adm("rel_diff_sani", 
-                                 title = "Relative Mismatch Prediction v Ground Truth of Sanitation Deprivation in India", 
+                                 title = "Relative Mismatch Prediction v Ground Truth \nof Sanitation Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Relative Difference:\nPrediction / Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$rel_diff_sani[!is.na(adm2_ind_shp_fortified$rel_diff_sani)])[1],
@@ -2720,14 +2722,14 @@ sani_rel_diff_plot <- plot_india_adm("rel_diff_sani",
 
 ##################################################################################################################### Housing
 housing_diff_plot <- plot_india_adm("diff_housing", 
-                                 title = "Mismatch Prediction v Ground Truth of Housing Deprivation in India", 
+                                 title = "Mismatch Prediction v Ground Truth \nof Housing Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$diff_housing[!is.na(adm2_ind_shp_fortified$diff_housing)])[1],
                                 upper = summary(adm2_ind_shp_fortified$diff_housing[!is.na(adm2_ind_shp_fortified$diff_housing)])[6])
 
 housing_rel_diff_plot <- plot_india_adm("rel_diff_housing", 
-                                 title = "Relative Mismatch Prediction v Ground Truth of Housing Deprivation in India", 
+                                 title = "Relative Mismatch Prediction v Ground Truth \nof Housing Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Relative Difference:\nPrediction / Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$rel_diff_housing[!is.na(adm2_ind_shp_fortified$rel_diff_housing)])[1],
@@ -2735,14 +2737,14 @@ housing_rel_diff_plot <- plot_india_adm("rel_diff_housing",
 
 ##################################################################################################################### Cooking Fuel
 cookingf_diff_plot <- plot_india_adm("diff_cooking_fuel", 
-                                 title = "Mismatch Prediction v Ground Truth of Cooking Fuel Deprivation in India", 
+                                 title = "Mismatch Prediction v Ground Truth \nof Cooking Fuel Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$diff_cooking_fuel[!is.na(adm2_ind_shp_fortified$diff_cooking_fuel)])[1],
                                 upper = summary(adm2_ind_shp_fortified$diff_cooking_fuel[!is.na(adm2_ind_shp_fortified$diff_cooking_fuel)])[6])
 
 cookingf_rel_diff_plot <- plot_india_adm("rel_diff_cookingfuel", 
-                                 title = "Relative Mismatch Prediction v Ground Truth of Cooking Fuel Deprivation in India", 
+                                 title = "Relative Mismatch Prediction v Ground Truth \nof Cooking Fuel Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Relative Difference:\nPrediction / Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$rel_diff_cookingfuel[!is.na(adm2_ind_shp_fortified$rel_diff_cookingfuel)])[1],
@@ -2750,14 +2752,14 @@ cookingf_rel_diff_plot <- plot_india_adm("rel_diff_cookingfuel",
 
 ##################################################################################################################### Assets
 assets_diff_plot <- plot_india_adm("diff_assets", 
-                                 title = "Mismatch Prediction v Ground Truth of Asset Deprivation in India", 
+                                 title = "Mismatch Prediction v Ground Truth \nof Asset Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Difference in %-Points:\nPrediction - Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$diff_assets[!is.na(adm2_ind_shp_fortified$diff_assets)])[1],
                                 upper = summary(adm2_ind_shp_fortified$diff_assets[!is.na(adm2_ind_shp_fortified$diff_assets)])[6])
 
 assets_rel_diff_plot <- plot_india_adm("rel_diff_assets", 
-                                 title = "Relative Mismatch Prediction v Ground Truth of Asset Deprivation in India", 
+                                 title = "Relative Mismatch Prediction v Ground Truth \nof Asset Deprivation in India", 
                                  subtitle = "",
                                  legend_title = "Relative Difference:\nPrediction / Ground Truth",
                                  lower = summary(adm2_ind_shp_fortified$rel_diff_assets[!is.na(adm2_ind_shp_fortified$rel_diff_assets)])[1],
