@@ -13,7 +13,7 @@ First of all, all downloaded files should be put in a folder called "Raw Data" (
 
 1. DHS data. DHS surveys are the ground truth used for this work. All can be downloaded form the DHS website [here](https://dhsprogram.com/). Download all stata files for whichever country you are interested in (+geolocations, that is an extra files which needs to be requested)
 2. DHS processing code. You can do this on your own, but to save you some time, the Oxford Poverty & Human Development Initiative has published some do-files useful to compute all you need for the MPI (multdimensional poverty index). To be found [here](https://ophi.org.uk/multidimensional-poverty-index/data-tables-do-files/). 
-3. WHO guidelines for stunting and wasting. These are necessary (and maybe also need to be edited) to process the DHS data into a poverty index. To be found [here](https://www.who.int/tools/child-growth-standards/software) (this can be annoying to download, feel free to reach out to me if you have trouble j.s.karl@lse.ac.uk.
+3. WHO guidelines for stunting and wasting. These are necessary (and maybe also need to be edited) to process the DHS data into a poverty index. To be found [here](https://www.who.int/tools/child-growth-standards/software) (this can be annoying to download, feel free to reach out to me if you have trouble jonathan.karl2501@gmail.com.
 4. World pop Data. These are population estimates on a granular scale. Easy to download on their website [here](https://www.worldpop.org/).
 
 Afterwards, I recommend setting up a folder "Data Exports" to store, surprise, exported data. This should include some subfolders to organise files.
