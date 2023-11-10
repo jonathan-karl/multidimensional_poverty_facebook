@@ -1,4 +1,4 @@
-# Mapping Multidimensional Poverty Indicator with Facebook Data
+# Mapping Multidimensional Poverty Indicators with Facebook Data
 
 This repository is the product of my Masters Thesis. The code contained in here can be used to extend my analysis in other countries or augment it in other ways. 
 
